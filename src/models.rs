@@ -532,6 +532,8 @@ pub struct TimelineParams {
     pub event_type: Option<String>,
     pub category: Option<String>,
     pub entity_id: Option<String>,
+    /// Optional exact workspace scope for journal events.
+    pub workspace_hash: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -544,6 +546,7 @@ impl Default for TimelineParams {
             event_type: None,
             category: None,
             entity_id: None,
+            workspace_hash: None,
             limit: 50,
             offset: 0,
         }
@@ -811,6 +814,24 @@ pub struct Stats {
     /// #493: entities with archived = 1 (forgotten/decayed), so consumers
     /// can show "N hidden" instead of a silently inflated total.
     pub archived_entities: i64,
+    /// Active rows carrying a dense embedding.
+    pub active_embedded_entities: i64,
+    /// Active rows explicitly verified by an operator or agent.
+    pub active_verified_entities: i64,
+    /// Active rows pinned into the always-on startup set.
+    pub active_always_on_entities: i64,
+    /// Active rows that have never been retrieved.
+    pub active_never_retrieved_entities: i64,
+    /// Sum of retrievals over active rows.
+    pub active_retrievals: i64,
+    /// Sum of follow observations over active rows.
+    pub active_follows: i64,
+    /// Sum of missed-follow observations over active rows.
+    pub active_misses: i64,
+    /// Registered agent identities.
+    pub registered_agents: i64,
+    /// Active mandatory keystones.
+    pub active_keystones: i64,
     pub by_category: serde_json::Value,
     pub by_type: serde_json::Value,
     pub by_layer: serde_json::Value,

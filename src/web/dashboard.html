@@ -2,450 +2,274 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Perseus Vault Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perseus Vault Operations</title>
 <style>
   :root {
+    color-scheme: dark;
     --bg: #0d1117;
-    --surface: #161b22;
-    --border: #30363d;
-    --text: #e6edf3;
-    --text-dim: #8b949e;
-    --accent: #58a6ff;
-    --accent-dim: #1f6feb;
-    --green: #3fb950;
-    --orange: #d2991d;
-    --red: #f85149;
-    --radius: 8px;
+    --surface: #151b23;
+    --surface-2: #1b2330;
+    --surface-3: #222c39;
+    --border: #303b49;
+    --text: #edf2f7;
+    --muted: #91a0b2;
+    --subtle: #617084;
+    --blue: #6ea8fe;
+    --blue-bg: #152b47;
+    --green: #62c48b;
+    --green-bg: #143326;
+    --amber: #e4b45d;
+    --amber-bg: #3b2f18;
+    --red: #f18383;
+    --red-bg: #421f24;
+    --radius: 6px;
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.5;
-  }
-  header {
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    padding: 12px 24px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-  header h1 { font-size: 20px; font-weight: 600; color: var(--accent); }
-  header .version { color: var(--text-dim); font-size: 13px; }
-  .search-bar {
-    flex: 1;
-    position: relative;
-  }
-  .search-bar input {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg);
-    color: var(--text);
-    font-size: 14px;
-  }
-  .search-bar input:focus { outline: none; border-color: var(--accent); }
-  main { padding: 24px; max-width: 1400px; margin: 0 auto; }
-  .stats-row {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-  .stat-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px;
-  }
-  .stat-card .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-  .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-  .stat-card .sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-  .tabs {
-    display: flex;
-    gap: 2px;
-    margin-bottom: 16px;
-    border-bottom: 1px solid var(--border);
-  }
-  .tabs button {
-    padding: 8px 16px;
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    cursor: pointer;
-    font-size: 14px;
-    border-bottom: 2px solid transparent;
-    transition: all 0.15s;
-  }
-  .tabs button:hover { color: var(--text); }
-  .tabs button.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
-  }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
-  #graph-container {
-    width: 100%;
-    height: 500px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
-  table { width: 100%; border-collapse: collapse; }
-  th, td {
-    text-align: left;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
-  }
-  th { color: var(--text-dim); font-weight: 500; font-size: 12px; text-transform: uppercase; }
-  tr:hover { background: rgba(88, 166, 255, 0.05); }
-  tr { cursor: pointer; }
-  .badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 500;
-  }
-  .badge-decision { background: rgba(88,166,255,0.15); color: var(--accent); }
-  .badge-architecture { background: rgba(63,185,80,0.15); color: var(--green); }
-  .badge-convention { background: rgba(210,153,29,0.15); color: var(--orange); }
-  .badge-insight { background: rgba(139,148,158,0.15); color: var(--text-dim); }
-  .expanded-row { background: var(--surface); }
-  .expanded-row td { padding: 16px 24px; }
-  .expanded-row pre {
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: 13px;
-    color: var(--text-dim);
-    max-height: 300px;
-    overflow-y: auto;
-  }
-  #loading { text-align: center; padding: 48px; color: var(--text-dim); }
-  /* #494: "About you" plain-language tab */
-  .about-headline { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
-  .about-headline .muted { color: var(--text-dim); font-weight: 400; font-size: 14px; }
-  .about-bucket {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 14px 16px;
-    margin-bottom: 14px;
-  }
-  .about-bucket h3 { font-size: 14px; margin-bottom: 8px; }
-  .about-bucket h3 .count { color: var(--text-dim); font-weight: 400; }
-  .about-item { padding: 4px 0; font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
-  .about-item .mark { width: 14px; flex: none; }
-  .about-item .mark.ok { color: var(--green); }
-  .about-item .mark.unv { color: var(--text-dim); }
-  .about-item .meta { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
-  .about-more, .about-footer { color: var(--text-dim); font-size: 12px; padding: 4px 0; }
-  .about-footer { margin-top: 8px; }
-  .about-footer code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  button, input, select { font: inherit; }
+  button { cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .topbar { min-height: 64px; display: flex; align-items: center; gap: 18px; padding: 12px 22px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 10; }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 210px; }
+  .brand-mark { width: 10px; height: 10px; border-radius: 50%; background: var(--subtle); }
+  .brand-mark.ok { background: var(--green); }
+  .brand-mark.bad { background: var(--red); }
+  .brand strong { font-size: 16px; letter-spacing: 0; }
+  .brand small { display: block; color: var(--muted); font-size: 11px; }
+  .search { display: flex; flex: 1; max-width: 760px; gap: 8px; }
+  .search input, .control, select { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text); padding: 9px 11px; }
+  .search button, .button { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-3); color: var(--text); padding: 8px 12px; }
+  .search button:hover, .button:hover { border-color: var(--blue); }
+  .icon-button { width: 36px; height: 36px; padding: 0; display: grid; place-items: center; }
+  .layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: calc(100vh - 64px); }
+  .sidebar { border-right: 1px solid var(--border); padding: 18px 12px; background: #10161e; }
+  .sidebar-label { color: var(--subtle); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; padding: 0 10px 8px; }
+  .nav { display: grid; gap: 4px; }
+  .nav button { border: 0; border-radius: var(--radius); background: transparent; color: var(--muted); padding: 9px 10px; text-align: left; }
+  .nav button:hover { color: var(--text); background: var(--surface-2); }
+  .nav button.active { color: var(--text); background: var(--blue-bg); box-shadow: inset 2px 0 var(--blue); }
+  main { min-width: 0; max-width: 1600px; width: 100%; margin: 0 auto; padding: 26px clamp(18px, 3vw, 42px) 48px; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 20px; }
+  .eyebrow { color: var(--blue); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 4px; }
+  h1, h2, h3, p { margin-top: 0; }
+  h1 { font-size: 25px; letter-spacing: 0; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin-bottom: 14px; }
+  h3 { font-size: 13px; margin-bottom: 8px; }
+  .muted, .meta { color: var(--muted); }
+  .subtle { color: var(--subtle); }
+  .refresh-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .metric { border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 14px; background: var(--surface); min-height: 82px; }
+  .metric-label { color: var(--muted); font-size: 11px; }
+  .metric-value { font-size: 24px; font-weight: 650; margin-top: 5px; }
+  .metric-note { color: var(--subtle); font-size: 11px; margin-top: 2px; }
+  .grid-2 { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 16px; min-width: 0; }
+  .panel + .panel { margin-top: 16px; }
+  .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .status-line { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: var(--radius); background: var(--surface-2); margin-bottom: 10px; }
+  .status-line.ok { background: var(--green-bg); color: var(--green); }
+  .status-line.warn { background: var(--amber-bg); color: var(--amber); }
+  .status-line.bad { background: var(--red-bg); color: var(--red); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+  .key-value { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(0, 1.3fr); gap: 7px 12px; font-size: 13px; }
+  .key-value dt { color: var(--muted); }
+  .key-value dd { margin: 0; overflow-wrap: anywhere; }
+  .bar-row { display: grid; grid-template-columns: 110px 1fr 38px; gap: 9px; align-items: center; margin: 9px 0; font-size: 12px; }
+  .bar { height: 7px; background: var(--surface-3); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--blue); border-radius: inherit; }
+  .callout { border-left: 3px solid var(--amber); padding: 9px 11px; background: var(--amber-bg); color: #f1d9a4; margin-top: 10px; }
+  .callout.good { border-color: var(--green); background: var(--green-bg); color: #b7e8ca; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .toolbar .control, .toolbar select { width: auto; min-width: 150px; }
+  .toolbar .grow { flex: 1; min-width: 220px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { border-bottom: 1px solid var(--border); padding: 10px 12px; text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; background: var(--surface-2); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: rgba(110,168,254,.06); }
+  .row-button { border: 0; padding: 0; background: transparent; color: var(--blue); text-align: left; font-weight: 600; overflow-wrap: anywhere; }
+  .row-button:hover { text-decoration: underline; }
+  .tag, .pill { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 2px 7px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .pill.good { color: var(--green); border-color: #2b6848; background: var(--green-bg); }
+  .pill.warn { color: var(--amber); border-color: #765725; background: var(--amber-bg); }
+  .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 12px; }
+  .pager-actions { display: flex; gap: 7px; }
+  .button[disabled] { opacity: .45; cursor: default; }
+  .memory-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .42fr); gap: 16px; align-items: start; }
+  .detail { position: sticky; top: 88px; max-height: calc(100vh - 112px); overflow: auto; }
+  .detail-empty { color: var(--muted); padding: 18px 0; }
+  .detail-body { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px; max-height: 260px; overflow: auto; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .detail-section { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; }
+  .link-list, .event-list, .review-list { display: grid; gap: 8px; }
+  .link-item, .event-item, .review-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; background: var(--surface-2); }
+  .event-item summary { cursor: pointer; color: var(--text); }
+  .event-meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  pre.compact { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .empty { color: var(--muted); padding: 22px 4px; }
+  .error { color: var(--red); background: var(--red-bg); border: 1px solid #6f3038; border-radius: var(--radius); padding: 10px 12px; }
+  .loading { color: var(--muted); padding: 18px 4px; }
+  .relationship-summary { color: var(--muted); margin-bottom: 14px; }
+  .privacy-note { color: var(--subtle); font-size: 12px; margin-top: 12px; }
   .hidden { display: none !important; }
-  #loading.hidden { display: none; }
+  @media (max-width: 1120px) {
+    .metric-grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+    .grid-2, .memory-layout { grid-template-columns: 1fr; }
+    .detail { position: static; max-height: none; }
+  }
+  @media (max-width: 720px) {
+    .topbar { align-items: stretch; flex-wrap: wrap; gap: 10px; padding: 11px 14px; }
+    .brand { min-width: 0; flex: 1; }
+    .search { order: 3; flex-basis: 100%; max-width: none; }
+    .layout { display: block; }
+    .sidebar { border-right: 0; border-bottom: 1px solid var(--border); padding: 7px 10px; overflow-x: auto; }
+    .sidebar-label { display: none; }
+    .nav { display: flex; min-width: max-content; }
+    .nav button { padding: 8px 10px; }
+    main { padding: 20px 13px 36px; }
+    .page-head { align-items: flex-start; flex-direction: column; }
+    h1 { font-size: 22px; }
+    .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: 1fr; }
+    .toolbar .control, .toolbar select, .toolbar .grow { width: 100%; min-width: 0; }
+    .toolbar .button { flex: 1; }
+    .key-value { grid-template-columns: 1fr; gap: 2px; }
+    .key-value dd { margin-bottom: 7px; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Perseus Vault</h1>
-  <span class="version">dashboard</span>
-  <div class="search-bar">
-    <input type="text" id="search-input" placeholder="Search memories..." autofocus>
+<header class="topbar">
+  <div class="brand">
+    <span id="health-mark" class="brand-mark" aria-hidden="true"></span>
+    <div><strong>Perseus Vault</strong><small>memory operations</small></div>
   </div>
+  <form id="search-form" class="search" role="search">
+    <label class="hidden" for="global-search">Search memories</label>
+    <input id="global-search" type="search" placeholder="Search memories" autocomplete="off">
+    <button type="submit">Search</button>
+  </form>
+  <button id="refresh-button" class="button icon-button" type="button" aria-label="Refresh dashboard" title="Refresh dashboard">↻</button>
 </header>
-<main>
-  <div class="stats-row" id="stats-row">
-    <div class="stat-card"><div class="label">Entities</div><div class="value" id="stat-total">—</div><div class="sub" id="stat-archived"></div></div>
-    <div class="stat-card"><div class="label">Journal</div><div class="value" id="stat-journal">—</div></div>
-    <div class="stat-card"><div class="label">State</div><div class="value" id="stat-state">—</div></div>
-    <div class="stat-card"><div class="label">DB Size</div><div class="value" id="stat-size">—</div></div>
-  </div>
-  <div class="tabs">
-    <button class="active" data-tab="entities">Entities</button>
-    <button data-tab="about">About you</button>
-    <button data-tab="graph">Graph</button>
-    <button data-tab="timeline">Timeline</button>
-  </div>
-  <div id="loading">Loading...</div>
-  <div class="tab-content" id="tab-about">
-    <div id="about-headline" class="about-headline"></div>
-    <div id="about-buckets"></div>
-    <div class="about-footer">
-      ✔ verified · ~ unverified. This view is read-only — to fix or remove
-      something, run <code>perseus knows --correct &lt;id&gt; "the right value"</code>
-      or <code>perseus knows --forget &lt;id&gt;</code>.
-    </div>
-  </div>
-  <div class="tab-content active" id="tab-entities">
-    <table id="entities-table">
-      <thead><tr><th>Key</th><th>Category</th><th>Layer</th><th>Score</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-  <div class="tab-content" id="tab-graph">
-    <div id="graph-truncation-note" class="hidden" style="padding:6px 2px;font-size:12px;color:var(--text-dim);"></div>
-    <div id="graph-container"></div>
-  </div>
-  <div class="tab-content" id="tab-timeline">
-    <table id="timeline-table">
-      <thead><tr><th>When</th><th>Type</th><th>Category</th><th>Key</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</main>
-<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.6/dist/vis-network.min.js"
-        integrity="sha384-MMLxWP/84QroX0uegDzRv7ib1nuKjUbUjLk2Li3jkwKWohW506l5X7B3AnChTXER"
-        crossorigin="anonymous"></script>
+<div class="layout">
+  <aside class="sidebar" aria-label="Primary">
+    <div class="sidebar-label">Vault</div>
+    <nav class="nav">
+      <button class="active" data-view="overview" type="button">Overview</button>
+      <button data-view="memories" type="button">Memories</button>
+      <button data-view="activity" type="button">Activity</button>
+      <button data-view="governance" type="button">Governance</button>
+      <button data-view="relationships" type="button">Relationships</button>
+    </nav>
+  </aside>
+  <main>
+    <div id="global-status" role="status" aria-live="polite" class="hidden"></div>
+
+    <section id="view-overview" class="view active" aria-labelledby="overview-title">
+      <div class="page-head"><div><p class="eyebrow">Operational summary</p><h1 id="overview-title">Vault overview</h1><p class="muted">A read-only view of memory coverage, quality, and lifecycle.</p></div><time id="last-refresh" class="refresh-time"></time></div>
+      <div class="metric-grid">
+        <div class="metric"><div class="metric-label">Active memories</div><div id="m-active" class="metric-value">—</div><div id="m-archived" class="metric-note"></div></div>
+        <div class="metric"><div class="metric-label">Embedded</div><div id="m-embedded" class="metric-value">—</div><div class="metric-note">semantic coverage</div></div>
+        <div class="metric"><div class="metric-label">Verified</div><div id="m-verified" class="metric-value">—</div><div class="metric-note">quality floor</div></div>
+        <div class="metric"><div class="metric-label">Working layer</div><div id="m-working" class="metric-value">—</div><div class="metric-note">promoted memories</div></div>
+        <div class="metric"><div class="metric-label">History rows</div><div id="m-history" class="metric-value">—</div><div class="metric-note">superseded versions</div></div>
+        <div class="metric"><div class="metric-label">Database</div><div id="m-size" class="metric-value">—</div><div class="metric-note">on disk</div></div>
+      </div>
+      <div class="grid-2">
+        <div>
+          <section class="panel"><div class="panel-head"><h2>Readiness</h2><span id="overview-health-label" class="pill">—</span></div><div id="overview-health" class="loading">Loading health…</div></section>
+          <section class="panel"><div class="panel-head"><h2>Distribution</h2><span class="muted">active rows</span></div><div id="distribution" class="loading">Loading distribution…</div></section>
+        </div>
+        <div>
+          <section class="panel"><div class="panel-head"><h2>Quality posture</h2><button class="button" type="button" data-view-target="governance">Open governance</button></div><div id="overview-quality" class="loading">Loading quality…</div></section>
+          <section class="panel"><div class="panel-head"><h2>Recent activity</h2><button class="button" type="button" data-view-target="activity">Open timeline</button></div><div id="overview-activity" class="loading">Loading activity…</div></section>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-memories" class="view" aria-labelledby="memories-title">
+      <div class="page-head"><div><p class="eyebrow">Inventory</p><h1 id="memories-title">Memories</h1><p class="muted">Inspect active records without changing retrieval state.</p></div></div>
+      <div class="toolbar">
+        <input id="memory-query" class="control grow" type="search" placeholder="Search by meaning or keyword" aria-label="Search memories">
+        <select id="memory-category" aria-label="Filter by category"><option value="">All categories</option></select>
+        <select id="memory-layer" aria-label="Filter by layer"><option value="">All layers</option><option value="buffer">Buffer</option><option value="working">Working</option><option value="semantic">Semantic</option><option value="core">Core</option></select>
+        <button id="memory-clear" class="button" type="button">Clear</button>
+      </div>
+      <div class="memory-layout">
+        <section class="panel"><div id="memory-status" class="loading">Loading memories…</div><div class="table-wrap"><table id="memory-table" class="hidden"><caption class="hidden">Memory inventory</caption><thead><tr><th>Memory</th><th>Type</th><th>Category</th><th>Layer</th><th>Quality</th><th>Usage</th></tr></thead><tbody></tbody></table></div><div class="pager"><span id="memory-count" class="muted"></span><span class="pager-actions"><button id="memory-prev" class="button" type="button">Previous</button><button id="memory-next" class="button" type="button">Next</button></span></div></section>
+        <aside id="memory-detail" class="panel detail" aria-live="polite"><div class="detail-empty">Select a memory to inspect its content, provenance, links, and version history.</div></aside>
+      </div>
+    </section>
+
+    <section id="view-activity" class="view" aria-labelledby="activity-title">
+      <div class="page-head"><div><p class="eyebrow">Audit trail</p><h1 id="activity-title">Activity</h1><p class="muted">Journal events are shown separately from entity timestamps.</p></div></div>
+      <div class="toolbar"><select id="activity-type" aria-label="Filter by event type"><option value="">All event types</option><option value="decision">Decision</option><option value="observation">Observation</option><option value="action">Action</option><option value="error">Error</option><option value="keystone_set">Keystone set</option></select><input id="activity-category" class="control" type="search" placeholder="Category" aria-label="Filter by category"><input id="activity-workspace" class="control" type="search" placeholder="Workspace (all)" aria-label="Filter by workspace"><button id="activity-apply" class="button" type="button">Apply</button></div>
+      <section class="panel"><div id="activity-status" class="loading">Loading timeline…</div><div id="activity-list" class="event-list"></div><div class="pager"><span id="activity-count" class="muted"></span><span class="pager-actions"><button id="activity-prev" class="button" type="button">Previous</button><button id="activity-next" class="button" type="button">Next</button></span></div></section>
+    </section>
+
+    <section id="view-governance" class="view" aria-labelledby="governance-title">
+      <div class="page-head"><div><p class="eyebrow">Quality and policy</p><h1 id="governance-title">Governance</h1><p class="muted">Read-only checks for memory quality, policy, and agent identity.</p></div></div>
+      <div class="grid-2"><div><section class="panel"><div class="panel-head"><h2>Quality telemetry</h2><span class="pill">read-only</span></div><div id="governance-quality" class="loading">Loading…</div></section><section class="panel"><div class="panel-head"><h2>Hygiene queue</h2><span class="muted">actionability threshold 0.35</span></div><div id="governance-hygiene" class="loading">Loading…</div></section></div><div><section class="panel"><div class="panel-head"><h2>Keystones</h2><span id="keystone-count" class="pill">—</span></div><div id="keystones" class="review-list loading">Loading…</div></section><section class="panel"><div class="panel-head"><h2>Registered agents</h2><span id="agent-count" class="pill">—</span></div><div id="agents" class="review-list loading">Loading…</div></section></div></div>
+    </section>
+
+    <section id="view-relationships" class="view" aria-labelledby="relationships-title">
+      <div class="page-head"><div><p class="eyebrow">Knowledge links</p><h1 id="relationships-title">Relationships</h1><p class="muted">A text-first view remains useful when the graph is sparse or offline.</p></div></div>
+      <section class="panel"><div id="relationship-summary" class="relationship-summary">Loading relationships…</div><div id="relationship-list" class="link-list"></div></section>
+    </section>
+  </main>
+</div>
 <script>
-const state = { entities: [], expandedId: null };
-
-async function api(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(r.statusText);
-  return r.json();
+const state = { view: 'overview', memoryPage: 0, memoryTotal: 0, activityPage: 0, activityTotal: 0, selectedId: null, memoryQuery: '', categories: [] };
+const $ = (id) => document.getElementById(id);
+const esc = (value) => { const d = document.createElement('div'); d.textContent = value == null ? '' : String(value); return d.innerHTML; };
+const attr = (value) => esc(value).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+const pretty = (value) => { try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value, null, 2); } catch (_) { return String(value || ''); } };
+const pct = (n, d) => d ? Math.round((n / d) * 100) : 0;
+const date = (ms) => ms ? new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+const bytes = (n) => n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const summary = (e) => { let b = {}; try { b = JSON.parse(e.body_json || '{}'); } catch (_) {} return b.summary || b.text || b.content || e.key || 'Untitled memory'; };
+async function api(path) { const r = await fetch(path, { headers: { Accept: 'application/json' } }); if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); return r.json(); }
+function status(id, text, kind = '') { const node = $(id); if (!node) return; node.className = kind ? `status-line ${kind}` : ''; node.textContent = text; }
+function panelError(id, error) { const node = $(id); node.className = 'error'; node.textContent = `Unable to load data: ${error.message || error}`; }
+function switchView(view) { state.view = view; document.querySelectorAll('.view').forEach((n) => n.classList.toggle('active', n.id === `view-${view}`)); document.querySelectorAll('.nav button').forEach((n) => n.classList.toggle('active', n.dataset.view === view)); if (view === 'memories') loadMemories(); if (view === 'activity') loadActivity(); if (view === 'governance') loadGovernance(); if (view === 'relationships') loadRelationships(); }
+function renderBars(target, map, total) { const node = $(target); const entries = Object.entries(map || {}); if (!entries.length) { node.innerHTML = '<div class="empty">No distribution data.</div>'; return; } node.innerHTML = entries.map(([key, n]) => `<div class="bar-row"><span>${esc(key)}</span><span class="bar"><i style="width:${pct(n, total)}%"></i></span><strong>${n}</strong></div>`).join(''); }
+function renderOverview(stats, health, quality, events) {
+  $('m-active').textContent = stats.active_entities ?? '—'; $('m-archived').textContent = `${stats.archived_entities || 0} archived`; $('m-embedded').textContent = `${pct(stats.active_embedded_entities, stats.active_entities)}%`; $('m-verified').textContent = `${pct(stats.active_verified_entities, stats.active_entities)}%`; $('m-working').textContent = stats.by_layer_active?.working || 0; $('m-history').textContent = stats.total_history_rows || 0; $('m-size').textContent = bytes(stats.db_file_size_bytes || 0);
+  const healthy = health.status === 'healthy'; $('health-mark').className = `brand-mark ${healthy ? 'ok' : 'bad'}`; $('overview-health-label').className = `pill ${healthy ? 'good' : 'warn'}`; $('overview-health-label').textContent = health.status || 'unknown';
+  $('overview-health').innerHTML = `<dl class="key-value"><dt>Semantic recall</dt><dd>${esc(health.semantic_recall)}</dd><dt>Active memories</dt><dd>${health.active_memories}</dd><dt>Embedded memories</dt><dd>${health.embedded_memories}</dd><dt>Last database write</dt><dd>${date(stats.newest_unix_ms)}</dd></dl>${(health.warnings || []).map((w) => `<div class="callout">${esc(w)}</div>`).join('')}`;
+  renderBars('distribution', stats.by_category_active, stats.active_entities); $('overview-quality').innerHTML = `<dl class="key-value"><dt>Contradictions</dt><dd>${quality.contradiction_count || 0}</dd><dt>Supersession lag</dt><dd>${quality.supersession_lag_count || 0}</dd><dt>Never retrieved</dt><dd>${stats.active_never_retrieved_entities ?? '—'}</dd><dt>Follow observations</dt><dd>${stats.active_follows || 0}</dd></dl><div class="callout good">Dashboard reads are observational and do not reinforce recall.</div>`;
+  $('overview-activity').innerHTML = events.length ? events.slice(0, 5).map(eventSummary).join('') : '<div class="empty">No journal events yet.</div>';
 }
-
-async function loadStats() {
-  const s = await api('/api/stats');
-  // #493: prefer the active-only count — archived (forgotten/decayed) rows
-  // are invisible to list/recall, so counting them inflates every number a
-  // user sees. Fall back to total_entities for servers without the field.
-  document.getElementById('stat-total').textContent =
-    (s.active_entities ?? s.total_entities) || 0;
-  document.getElementById('stat-archived').textContent =
-    s.archived_entities > 0 ? '+' + s.archived_entities + ' archived' : '';
-  document.getElementById('stat-journal').textContent = s.total_journal_events || 0;
-  document.getElementById('stat-state').textContent = s.total_state_entries || 0;
-  const bytes = s.db_file_size_bytes || 0;
-  document.getElementById('stat-size').textContent = bytes < 1048576
-    ? (bytes / 1024).toFixed(1) + ' KB'
-    : (bytes / 1048576).toFixed(1) + ' MB';
-}
-
-async function loadEntities() {
-  const data = await api('/api/entities?limit=200');
-  state.entities = data.items || [];
-  renderEntities();
-  document.getElementById('loading').classList.add('hidden');
-}
-
-function renderEntities() {
-  const tbody = document.querySelector('#entities-table tbody');
-  tbody.innerHTML = '';
-  state.entities.forEach(e => {
-    const tr = document.createElement('tr');
-    tr.onclick = () => toggleExpand(e.id);
-    tr.innerHTML = `
-      <td><strong>${esc(e.key)}</strong></td>
-      <td><span class="badge badge-${e.category || 'insight'}">${esc(e.category)}</span></td>
-      <td>${esc(e.layer)}</td>
-      <td>${(e.decay_score || 0).toFixed(2)}</td>
-    `;
-    tbody.appendChild(tr);
-
-    if (state.expandedId === e.id) {
-      const exp = document.createElement('tr');
-      exp.className = 'expanded-row';
-      exp.innerHTML = `<td colspan="4"><pre>${esc(JSON.stringify(e, null, 2))}</pre></td>`;
-      tbody.appendChild(exp);
-    }
-  });
-}
-
-function toggleExpand(id) {
-  state.expandedId = state.expandedId === id ? null : id;
-  renderEntities();
-}
-
-async function search() {
-  const q = document.getElementById('search-input').value.trim();
-  if (!q) return loadEntities();
-  const data = await api(`/api/search?q=${encodeURIComponent(q)}&limit=100`);
-  state.entities = data.items || [];
-  renderEntities();
-}
-
-async function loadTimeline() {
-  const data = await api('/api/journal?limit=100');
-  const tbody = document.querySelector('#timeline-table tbody');
-  tbody.innerHTML = '';
-  (data.items || []).forEach(e => {
-    const tr = document.createElement('tr');
-    const when = e.created_at_unix_ms
-      ? new Date(e.created_at_unix_ms).toISOString().replace('T', ' ').substring(0, 19)
-      : '—';
-    tr.innerHTML = `
-      <td>${esc(when)}</td>
-      <td>${esc(e.event_type)}</td>
-      <td>${esc(e.category)}</td>
-      <td>${esc(e.key)}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-let graphNetwork = null;
-async function loadGraph() {
-  const data = await api('/api/graph');
-  // #402: /api/graph is capped (default 500 nodes); surface truncation
-  // instead of silently rendering a partial graph.
-  const note = document.getElementById('graph-truncation-note');
-  if (note) {
-    if (data.truncated) {
-      note.textContent = `Showing ${data.returned_nodes} of ${data.total_nodes} nodes (largest graphs are capped for rendering performance).`;
-      note.classList.remove('hidden');
-    } else {
-      note.classList.add('hidden');
-    }
-  }
-  const nodes = new vis.DataSet((data.nodes || []).map(n => ({
-    id: n.id, label: n.label || n.key || n.id, title: n.category,
-    color: { background: '#58a6ff', border: '#1f6feb' }
-  })));
-  const edges = new vis.DataSet((data.edges || []).map(e => ({
-    from: e.from, to: e.to, label: e.relationship || ''
-  })));
-  const container = document.getElementById('graph-container');
-  if (graphNetwork) graphNetwork.destroy();
-  graphNetwork = new vis.Network(container, { nodes, edges }, {
-    physics: { solver: 'forceAtlas2Based' },
-    edges: { color: '#30363d', arrows: { to: { enabled: true } } },
-    interaction: { hover: true },
-  });
-}
-
-// ── #494: "About you" — plain-language, read-only view ──────────────────────
-// Bucketing mirrors `perseus knows` (perseus #692) so both surfaces tell the
-// same story. Data comes from the active-only /api/entities listing; the
-// headline prefers the active-only stats fields (#493).
-const ABOUT_YOU_CATS = new Set(['user', 'identity', 'preference', 'preferences',
-                                'profile', 'personal', 'communication']);
-const CONVERSATIONAL_CATS = new Set(['conversation', 'session', 'checkpoint', 'general']);
-const ABOUT_BUCKETS = ['About you', 'Recently learned', 'Project facts & decisions',
-                       'Low confidence — might be stale'];
-const LOW_CONFIDENCE_DECAY = 0.3;
-const RECENT_MS = 7 * 86400 * 1000;
-
-function aboutBucket(e, now) {
-  if (ABOUT_YOU_CATS.has(e.category)) return 'About you';
-  if ((e.decay_score ?? 1) < LOW_CONFIDENCE_DECAY) return 'Low confidence — might be stale';
-  if (now - (e.created_at_unix_ms || 0) <= RECENT_MS) return 'Recently learned';
-  return 'Project facts & decisions';
-}
-
-function aboutAge(now, then) {
-  const days = Math.max(0, Math.floor((now - (then || 0)) / 86400000));
-  if (days === 0) return 'today';
-  if (days === 1) return 'yesterday';
-  if (days < 30) return days + 'd ago';
-  if (days < 365) return Math.floor(days / 30) + 'mo ago';
-  return Math.floor(days / 365) + 'y ago';
-}
-
-function aboutLabel(e) {
-  const text = (e.summary || e.title || e.text || e.content || e.note ||
-                e.description || e.key || e.category || '').toString();
-  return text.length > 110 ? text.slice(0, 107) + '…' : text;
-}
-
-async function loadAbout() {
-  const now = Date.now();
-  const [stats, data] = await Promise.all([
-    api('/api/stats').catch(() => ({})),
-    api('/api/entities?limit=500'),
-  ]);
-  const items = data.items || [];
-
-  const buckets = {};
-  ABOUT_BUCKETS.forEach(b => buckets[b] = []);
-  let olderConversational = 0;
-  items.forEach(e => {
-    const b = aboutBucket(e, now);
-    if (b === 'Project facts & decisions' && CONVERSATIONAL_CATS.has(e.category)) {
-      olderConversational++;
-      return;
-    }
-    buckets[b].push(e);
-  });
-
-  // Honest headline: active-only stats when the server has them (#493);
-  // otherwise the listing size — never the archived-inflated total_entities.
-  const head = document.getElementById('about-headline');
-  if (stats.active_entities != null) {
-    const archived = stats.archived_entities > 0
-      ? ` <span class="muted">(${stats.archived_entities} archived — hidden)</span>` : '';
-    head.innerHTML = `Perseus knows ${stats.active_entities} things${archived}`;
-  } else {
-    const more = items.length >= (data.limit || 500) ? '+' : '';
-    head.innerHTML = `Perseus knows ${items.length}${more} things` +
-      ` <span class="muted">(newest ${items.length} shown)</span>`;
-  }
-
-  const root = document.getElementById('about-buckets');
-  root.innerHTML = '';
-  const PER_BUCKET = 8;
-  ABOUT_BUCKETS.forEach(name => {
-    const list = buckets[name];
-    if (!list.length) return;
-    const div = document.createElement('div');
-    div.className = 'about-bucket';
-    const rows = list.slice(0, PER_BUCKET).map(e => {
-      const mark = e.verified ? '<span class="mark ok">✔</span>'
-                              : '<span class="mark unv">~</span>';
-      return `<div class="about-item">${mark}<span>${esc(aboutLabel(e))}</span>` +
-        `<span class="meta">${esc(e.category || 'uncategorized')} · ` +
-        `${aboutAge(now, e.created_at_unix_ms)}</span></div>`;
-    }).join('');
-    const more = list.length > PER_BUCKET
-      ? `<div class="about-more">… and ${list.length - PER_BUCKET} more</div>` : '';
-    div.innerHTML = `<h3>${esc(name)} <span class="count">(${list.length})</span></h3>` +
-      rows + more;
-    root.appendChild(div);
-  });
-  if (olderConversational) {
-    const div = document.createElement('div');
-    div.className = 'about-more';
-    div.textContent = `…plus ${olderConversational} older conversation/session ` +
-      'memories (auto-captured; not shown)';
-    root.appendChild(div);
-  }
-}
-
-// Tab switching
-document.querySelectorAll('.tabs button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    btn.classList.add('active');
-    const tabId = 'tab-' + btn.dataset.tab;
-    document.getElementById(tabId).classList.add('active');
-    if (btn.dataset.tab === 'about') loadAbout();
-    if (btn.dataset.tab === 'graph') loadGraph();
-    if (btn.dataset.tab === 'timeline') loadTimeline();
-  });
-});
-
-// Search on Enter
-document.getElementById('search-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') search();
-});
-
-function esc(str) {
-  if (!str) return '';
-  const div = document.createElement('div');
-  div.textContent = String(str);
-  return div.innerHTML;
-}
-
-// Init
-loadStats();
-loadEntities();
+function eventSummary(e) { return `<div class="event-item"><strong>${esc(e.event_type || 'event')}</strong><div class="event-meta">${date(e.created_at_unix_ms)} · ${esc(e.category || 'system')} · ${esc(e.key || '—')} · ${esc(e.agent_id || 'unattributed')}</div></div>`; }
+async function loadOverview() { try { const [stats, health, quality, timeline] = await Promise.all([api('/api/stats'), api('/api/health'), api('/api/quality'), api('/api/timeline?limit=10')]); renderOverview(stats, health, quality, timeline.items || []); $('last-refresh').textContent = `Updated ${date(Date.now())}`; } catch (e) { panelError('overview-health', e); panelError('overview-quality', e); } }
+function memoryUrl() { const q = state.memoryQuery.trim(); if (q) return `/api/search?q=${encodeURIComponent(q)}&limit=100`; const params = new URLSearchParams({ limit: '50', offset: String(state.memoryPage * 50) }); const cat = $('memory-category').value; const layer = $('memory-layer').value; if (cat) params.set('category', cat); if (layer) params.set('layer', layer); return `/api/entities?${params}`; }
+function renderMemoryRow(e) { const quality = e.verified ? '<span class="pill good">verified</span>' : `<span class="pill">${Math.round((e.certainty || 0) * 100)}% certain</span>`; return `<tr><td><button class="row-button" type="button" data-memory-id="${attr(e.id)}">${esc(e.key)}</button><div class="meta">${esc(summary(e).slice(0, 100))}</div></td><td>${esc(e.type || 'insight')}</td><td><span class="tag">${esc(e.category)}</span></td><td>${esc(e.layer)}</td><td>${quality}<div class="meta">decay ${(e.decay_score || 0).toFixed(2)}</div></td><td>${e.retrieval_count || 0}<div class="meta">${date(e.last_accessed_unix_ms)}</div></td></tr>`; }
+async function loadMemories() { const statusNode = $('memory-status'); statusNode.className = 'loading'; statusNode.textContent = 'Loading memories…'; $('memory-table').classList.add('hidden'); try { const data = await api(memoryUrl()); const items = data.items || []; state.memoryTotal = data.total ?? items.length; if (!state.memoryQuery && state.memoryPage * 50 >= state.memoryTotal && state.memoryPage > 0) { state.memoryPage -= 1; return loadMemories(); } $('memory-table').classList.toggle('hidden', !items.length); $('memory-table').querySelector('tbody').innerHTML = items.map(renderMemoryRow).join(''); statusNode.className = items.length ? 'hidden' : 'empty'; statusNode.textContent = items.length ? '' : 'No memories match these filters.'; $('memory-count').textContent = `${items.length ? state.memoryPage * 50 + 1 : 0}–${state.memoryPage * 50 + items.length} of ${state.memoryTotal}`; $('memory-prev').disabled = state.memoryPage === 0; $('memory-next').disabled = state.memoryQuery || (state.memoryPage + 1) * 50 >= state.memoryTotal; } catch (e) { panelError('memory-status', e); } }
+async function openMemory(id) { state.selectedId = id; const detail = $('memory-detail'); detail.innerHTML = '<div class="loading">Loading memory…</div>'; try { const e = await api(`/api/entities/${encodeURIComponent(id)}`); const history = await api(`/api/history?category=${encodeURIComponent(e.category)}&key=${encodeURIComponent(e.key)}&workspace=${encodeURIComponent(e.workspace_hash || '')}&limit=10`); const links = e.links || []; detail.innerHTML = `<div class="panel-head"><div><p class="eyebrow">Selected memory</p><h2>${esc(e.key)}</h2></div><span class="pill ${e.verified ? 'good' : ''}">${e.verified ? 'verified' : 'unverified'}</span></div><p class="muted">${esc(e.category)} · ${esc(e.type)} · ${esc(e.layer)}</p><div class="detail-section"><h3>Content</h3><pre class="detail-body">${esc(pretty(e.body_json))}</pre></div><div class="detail-section"><h3>Metadata</h3><dl class="key-value"><dt>ID</dt><dd>${esc(e.id)}</dd><dt>Scope</dt><dd>${esc(e.workspace_hash || 'global')}</dd><dt>Source</dt><dd>${esc(e.source)}</dd><dt>Agent</dt><dd>${esc(e.agent_id || 'unattributed')}</dd><dt>Decay</dt><dd>${Number(e.decay_score || 0).toFixed(3)}</dd><dt>Certainty</dt><dd>${Math.round((e.certainty || 0) * 100)}%</dd><dt>Retrieved</dt><dd>${e.retrieval_count || 0} times</dd><dt>Created</dt><dd>${date(e.created_at_unix_ms)}</dd><dt>Last accessed</dt><dd>${date(e.last_accessed_unix_ms)}</dd></dl></div><div class="detail-section"><h3>Recall triggers</h3><div class="meta">${(e.recall_when || []).map((x) => `<span class="tag">${esc(x)}</span>`).join(' ') || 'No triggers recorded.'}</div></div><div class="detail-section"><h3>Links</h3><div class="link-list">${links.length ? links.map((l) => `<div class="link-item"><button class="row-button" type="button" data-memory-id="${attr(l.target_id)}">${esc(l.relationship || 'related')}</button><div class="meta">${esc(l.target_id)}</div></div>`).join('') : '<div class="empty">No outgoing links.</div>'}</div></div><div class="detail-section"><h3>Version history</h3><div class="meta">${history.total || 0} superseded versions</div>${(history.versions || []).slice(0, 5).map((v) => `<div class="link-item"><strong>${date(v.last_accessed_unix_ms || v.created_at_unix_ms)}</strong><div class="meta">${esc(v.status || 'historical')} · ${esc(v.layer || '')}</div></div>`).join('') || '<div class="empty">No prior versions.</div>'}</div>`; } catch (e) { panelError('memory-detail', e); } }
+async function loadActivity() { const node = $('activity-status'); node.className = 'loading'; node.textContent = 'Loading timeline…'; try { const params = new URLSearchParams({ limit: '50', offset: String(state.activityPage * 50) }); const type = $('activity-type').value; const category = $('activity-category').value.trim(); const workspace = $('activity-workspace').value.trim(); if (type) params.set('event_type', type); if (category) params.set('category', category); if (workspace) params.set('workspace', workspace); const data = await api(`/api/timeline?${params}`); state.activityTotal = data.total || 0; const items = data.items || []; $('activity-list').innerHTML = items.length ? items.map((e) => `<details class="event-item"><summary><strong>${esc(e.event_type || 'event')}</strong><span class="event-meta">${date(e.created_at_unix_ms)} · ${esc(e.category || 'system')} · ${esc(e.key || '—')} · ${esc(e.agent_id || 'unattributed')} · ${esc(e.workspace_hash || 'global')}</span></summary><pre class="compact">evaluated: ${esc(pretty(e.evaluated_json))}\nacted: ${esc(pretty(e.acted_json))}\nforward: ${esc(pretty(e.forward_json))}</pre>${e.entity_id ? `<button class="row-button" type="button" data-memory-id="${attr(e.entity_id)}">Open ${esc(e.entity_id)}</button>` : ''}</details>`).join('') : '<div class="empty">No events match these filters.</div>'; node.className = 'hidden'; $('activity-count').textContent = `${items.length ? state.activityPage * 50 + 1 : 0}–${state.activityPage * 50 + items.length} of ${state.activityTotal}`; $('activity-prev').disabled = state.activityPage === 0; $('activity-next').disabled = (state.activityPage + 1) * 50 >= state.activityTotal; } catch (e) { panelError('activity-status', e); } }
+async function loadGovernance() { try { const [quality, hygiene, keystones, agents] = await Promise.all([api('/api/quality'), api('/api/hygiene?limit=20'), api('/api/keystones'), api('/api/agents')]); $('governance-quality').innerHTML = `<dl class="key-value"><dt>Contradictions</dt><dd>${quality.contradiction_count || 0} (${((quality.contradiction_rate || 0) * 100).toFixed(1)}%)</dd><dt>Supersession lag</dt><dd>${quality.supersession_lag_count || 0}</dd><dt>Working</dt><dd>${quality.promotion_flow?.working ?? '—'}</dd><dt>Semantic</dt><dd>${quality.promotion_flow?.semantic ?? '—'}</dd></dl>`; const flags = hygiene.flagged || []; $('governance-hygiene').innerHTML = flags.length ? flags.map((x) => `<div class="review-item"><strong>${esc(x.category)}/${esc(x.key)}</strong><div class="meta">actionability ${x.actionability} · ${(x.reasons || []).map(esc).join(', ')}</div></div>`).join('') : '<div class="callout good">No low-actionability memories found.</div>'; $('keystone-count').textContent = keystones.total ?? 0; $('keystones').className = 'review-list'; $('keystones').innerHTML = (keystones.items || []).length ? keystones.items.map((k) => `<div class="review-item"><strong>${esc(k.content)}</strong><div class="meta">${esc(k.scope)} · weight ${k.weight} · tier ${k.trust_tier_required}</div></div>`).join('') : '<div class="empty">No keystones configured.</div>'; $('agent-count').textContent = agents.total ?? 0; $('agents').className = 'review-list'; $('agents').innerHTML = (agents.items || []).length ? agents.items.map((a) => `<div class="review-item"><strong>${esc(a.name || a.agent_id)}</strong><div class="meta">${esc(a.agent_id)} · tier ${a.trust_tier} · ${esc(a.fleet_id || 'no fleet')}</div></div>`).join('') : '<div class="empty">No registered agents.</div>'; } catch (e) { panelError('governance-quality', e); panelError('governance-hygiene', e); } }
+async function loadRelationships() { try { const data = await api('/api/graph?limit=500'); const edges = data.edges || []; $('relationship-summary').textContent = `${data.returned_nodes || 0} nodes shown · ${edges.length} visible links${data.truncated ? ` · ${data.total_nodes} total nodes` : ''}`; $('relationship-list').innerHTML = edges.length ? edges.map((e) => `<div class="link-item"><button class="row-button" type="button" data-memory-id="${attr(e.from)}">${esc(e.from)}</button><span class="meta"> ${esc(e.relationship || 'related')} → </span><button class="row-button" type="button" data-memory-id="${attr(e.to)}">${esc(e.to)}</button></div>`).join('') : '<div class="empty">No links are available yet. Relationship analytics will become useful as memories cite one another.</div>'; } catch (e) { panelError('relationship-summary', e); } }
+function refresh() { loadOverview(); if (state.view === 'memories') loadMemories(); if (state.view === 'activity') loadActivity(); if (state.view === 'governance') loadGovernance(); if (state.view === 'relationships') loadRelationships(); }
+document.querySelectorAll('.nav button').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.view)));
+document.querySelectorAll('[data-view-target]').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.viewTarget)));
+document.addEventListener('click', (e) => { const button = e.target.closest('[data-memory-id]'); if (button) { switchView('memories'); openMemory(button.dataset.memoryId); } });
+$('refresh-button').addEventListener('click', refresh);
+$('search-form').addEventListener('submit', (e) => { e.preventDefault(); state.memoryQuery = $('global-search').value.trim(); state.memoryPage = 0; switchView('memories'); });
+$('memory-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') { state.memoryQuery = e.currentTarget.value.trim(); state.memoryPage = 0; loadMemories(); } });
+$('memory-category').addEventListener('change', () => { state.memoryQuery = ''; $('global-search').value = ''; state.memoryPage = 0; loadMemories(); });
+$('memory-layer').addEventListener('change', () => { state.memoryQuery = ''; state.memoryPage = 0; loadMemories(); });
+$('memory-clear').addEventListener('click', () => { $('memory-query').value = ''; $('global-search').value = ''; $('memory-category').value = ''; $('memory-layer').value = ''; state.memoryQuery = ''; state.memoryPage = 0; loadMemories(); });
+$('memory-prev').addEventListener('click', () => { state.memoryPage = Math.max(0, state.memoryPage - 1); loadMemories(); });
+$('memory-next').addEventListener('click', () => { state.memoryPage += 1; loadMemories(); });
+$('activity-apply').addEventListener('click', () => { state.activityPage = 0; loadActivity(); });
+$('activity-prev').addEventListener('click', () => { state.activityPage = Math.max(0, state.activityPage - 1); loadActivity(); });
+$('activity-next').addEventListener('click', () => { state.activityPage += 1; loadActivity(); });
+(async function init() { try { const stats = await api('/api/stats'); state.categories = Object.keys(stats.by_category_active || {}); $('memory-category').innerHTML += state.categories.map((c) => `<option value="${attr(c)}">${esc(c)}</option>`).join(''); } catch (_) {} loadOverview(); })();
 </script>
 </body>
 </html>

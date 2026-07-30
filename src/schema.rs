@@ -1155,6 +1155,38 @@ pub fn gather_stats(conn: &Connection, db_path: &str) -> Result<Stats, Box<dyn s
     )?;
     let archived_entities = total_entities - active_entities;
 
+    let active_embedded_entities: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entities WHERE archived = 0 AND embedding IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let active_verified_entities: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entities WHERE archived = 0 AND verified = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    let active_always_on_entities: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entities WHERE archived = 0 AND always_on = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    let active_never_retrieved_entities: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entities WHERE archived = 0 AND retrieval_count = 0",
+        [],
+        |r| r.get(0),
+    )?;
+    let (active_retrievals, active_follows, active_misses): (i64, i64, i64) = conn.query_row(
+        "SELECT COALESCE(SUM(retrieval_count), 0), COALESCE(SUM(follow_count), 0), COALESCE(SUM(miss_count), 0) FROM entities WHERE archived = 0",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let registered_agents: i64 = conn
+        .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
+        .unwrap_or(0);
+    let active_keystones: i64 = conn
+        .query_row("SELECT COUNT(*) FROM keystones", [], |r| r.get(0))
+        .unwrap_or(0);
+
     let by_category = query_grouped_counts(conn, "entities", "category", "")?;
     let by_type = query_grouped_counts(conn, "entities", "type", "")?;
     let by_layer = query_grouped_counts(conn, "entities", "layer", "")?;
@@ -1230,6 +1262,15 @@ pub fn gather_stats(conn: &Connection, db_path: &str) -> Result<Stats, Box<dyn s
         total_entities,
         active_entities,
         archived_entities,
+        active_embedded_entities,
+        active_verified_entities,
+        active_always_on_entities,
+        active_never_retrieved_entities,
+        active_retrievals,
+        active_follows,
+        active_misses,
+        registered_agents,
+        active_keystones,
         by_category,
         by_type,
         by_layer,

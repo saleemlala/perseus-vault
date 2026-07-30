@@ -596,6 +596,8 @@ pub struct TimelineArgs {
     pub category: Option<String>,
     #[serde(default)]
     pub entity_id: Option<String>,
+    #[serde(default)]
+    pub workspace_hash: Option<String>,
     #[serde(default = "default_timeline_limit")]
     pub limit: i64,
     #[serde(default)]
@@ -2400,6 +2402,7 @@ pub fn handle_timeline(db: &Database, args: Value) -> Result<String, String> {
         event_type: a.event_type,
         category: a.category,
         entity_id: a.entity_id,
+        workspace_hash: a.workspace_hash,
         limit: a.limit,
         offset: a.offset,
     };

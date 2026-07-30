@@ -35,26 +35,33 @@ pub fn build_router(db: Arc<Database>, auth_token: Option<String>) -> Router {
 
     // Tighten CORS: if auth token is set, allow specific origins; otherwise disable CORS
     let cors = if state.auth_token.is_some() {
-        // With auth, we can safely allow CORS but restrict to known origins
+        // Authenticated deployments may call the API from another local UI;
+        // the bearer token remains required by middleware.
         CorsLayer::new()
             .allow_origin(AllowOrigin::mirror_request())
             .allow_methods([axum::http::Method::GET])
             .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
     } else {
-        // No auth: listen only on 127.0.0.1 (caller should ensure this), CORS disabled
+        // Loopback without auth is same-origin only. Do not emit ACAO for an
+        // arbitrary website and expose decrypted memories through localhost.
         CorsLayer::new()
-            .allow_origin(AllowOrigin::mirror_request())
-            .allow_methods([axum::http::Method::GET])
-            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
     };
 
     let router = Router::new()
         .route("/", get(dashboard))
         .route("/api/entities", get(list_entities))
-        .route("/api/entities/{id}", get(entity_detail))
+        .route("/api/entities/:id", get(entity_detail))
         .route("/api/search", get(search))
         .route("/api/stats", get(stats))
+        .route("/api/health", get(health))
+        .route("/api/quality", get(quality))
+        .route("/api/hygiene", get(hygiene))
+        .route("/api/operator-review", get(operator_review))
+        .route("/api/keystones", get(keystones))
+        .route("/api/agents", get(agents))
         .route("/api/journal", get(journal))
+        .route("/api/timeline", get(timeline))
+        .route("/api/history", get(history))
         .route("/api/graph", get(graph))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(cors)
@@ -148,14 +155,82 @@ struct SearchParams {
     workspace: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct QualityParams {
+    #[serde(default)]
+    category: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct HygieneParams {
+    #[serde(default)]
+    threshold: Option<f64>,
+    #[serde(default)]
+    scan_limit: Option<i64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ReviewParams {
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    stale_threshold: Option<f64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct KeystoneParams {
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    scope_id: Option<String>,
+    #[serde(default)]
+    workspace_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryParams {
+    category: String,
+    key: String,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default = "default_history_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_history_limit() -> i64 {
+    20
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TimelineParams {
+    #[serde(default)]
+    from_ms: Option<i64>,
+    #[serde(default)]
+    to_ms: Option<i64>,
+    #[serde(default)]
+    event_type: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    entity_id: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default = "default_page_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
 #[derive(Debug, Deserialize)]
 struct JournalParams {
     #[serde(default = "default_page_limit")]
     limit: i64,
-    // NOTE: intentionally no `workspace` field here yet — the
-    // `journal` table has no workspace_hash column, so there is nothing to
-    // scope by. See the doc comment on `Database::get_recent_journal` for
-    // why this needs a schema migration rather than a query-param fix.
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,6 +353,9 @@ async fn search(
             query: params.q.clone(),
             category: params.category.clone(),
             limit,
+            // Dashboard inspection is observational. FTS5 otherwise bumps
+            // retrieval_count/last_accessed and can promote layers.
+            skip_side_effects: true,
             // recall() already supports workspace_hash scoping (v1.2.0) —
             // the dashboard just wasn't passing it through, so search leaked
             // cross-workspace results the same way list_entities did.
@@ -307,6 +385,199 @@ async fn stats(State(state): State<WebState>) -> Result<Json<Value>, StatusCode>
     Ok(Json(
         serde_json::to_value(s).unwrap_or(json!({ "error": "serialization failed" })),
     ))
+}
+
+async fn health(State(state): State<WebState>) -> Result<Json<Value>, StatusCode> {
+    let value = blocking_db(state.db.clone(), move |db| {
+        let readiness = db.readiness();
+        Ok(json!({
+            "status": if readiness.db_responds { "healthy" } else { "unhealthy" },
+            "db_path": db.db_path(),
+            "ready": readiness.ready(),
+            "active_memories": readiness.active_memories,
+            "embedded_memories": readiness.embedded_memories,
+            "semantic_recall": readiness.semantic_recall(),
+            "warnings": readiness.warnings(),
+        }))
+    })
+    .await?;
+    Ok(Json(value))
+}
+
+fn parse_read_tool(raw: Result<String, String>) -> Result<Value, StatusCode> {
+    let text = raw.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    serde_json::from_str(&text).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn quality(
+    State(state): State<WebState>,
+    Query(params): Query<QualityParams>,
+) -> Result<Json<Value>, StatusCode> {
+    let value = blocking_db(state.db.clone(), move |db| {
+        if let Some(category) = params.category {
+            return parse_read_tool(crate::tools::handle_quality_telemetry(
+                db,
+                json!({"category": category}),
+            ));
+        }
+
+        let mut value = parse_read_tool(crate::tools::handle_quality_telemetry(
+            db,
+            json!({"category": "general"}),
+        ))?;
+        let stats = db.stats().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut contradictions = 0i64;
+        if let Some(categories) = stats.by_category_active.as_object() {
+            for category in categories.keys() {
+                let report = db
+                    .detect_conflicts(category, 0.4, 1000, 0)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                contradictions += report["conflicts_found"].as_i64().unwrap_or(0);
+            }
+        }
+        value["contradiction_count"] = json!(contradictions);
+        value["contradiction_rate"] = json!(if stats.active_entities > 0 {
+            contradictions as f64 / stats.active_entities as f64
+        } else {
+            0.0
+        });
+        value["category_scanned"] = json!("all");
+        Ok(value)
+    })
+    .await?;
+    Ok(Json(value))
+}
+
+async fn hygiene(
+    State(state): State<WebState>,
+    Query(params): Query<HygieneParams>,
+) -> Result<Json<Value>, StatusCode> {
+    let value = blocking_db(state.db.clone(), move |db| {
+        parse_read_tool(crate::tools::handle_hygiene(
+            db,
+            json!({
+                "threshold": params.threshold,
+                "scan_limit": params.scan_limit,
+                "limit": params.limit,
+            }),
+        ))
+    })
+    .await?;
+    Ok(Json(value))
+}
+
+async fn operator_review(
+    State(state): State<WebState>,
+    Query(params): Query<ReviewParams>,
+) -> Result<Json<Value>, StatusCode> {
+    let value = blocking_db(state.db.clone(), move |db| {
+        parse_read_tool(crate::tools::handle_operator_review(
+            db,
+            json!({
+                "category": params.category.unwrap_or_else(|| "general".to_string()),
+                "stale_threshold": params.stale_threshold,
+                "limit": params.limit.unwrap_or(10),
+            }),
+        ))
+    })
+    .await?;
+    Ok(Json(value))
+}
+
+async fn keystones(
+    State(state): State<WebState>,
+    Query(params): Query<KeystoneParams>,
+) -> Result<Json<Value>, StatusCode> {
+    let value = blocking_db(state.db.clone(), move |db| {
+        let items = db
+            .keystone_get(
+                params.scope.as_deref(),
+                params.scope_id.as_deref(),
+                params.workspace_hash.as_deref(),
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let total = items.len();
+        Ok(json!({"items": items, "total": total}))
+    })
+    .await?;
+    Ok(Json(value))
+}
+
+async fn agents(State(state): State<WebState>) -> Result<Json<Value>, StatusCode> {
+    let items = blocking_db(state.db.clone(), move |db| {
+        db.agents().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    })
+    .await?;
+    let total = items.len();
+    Ok(Json(json!({"items": items, "total": total})))
+}
+
+async fn timeline(
+    State(state): State<WebState>,
+    Query(params): Query<TimelineParams>,
+) -> Result<Json<Value>, StatusCode> {
+    let limit = params.limit.clamp(1, 1000);
+    let offset = params.offset.clamp(0, 10_000);
+    let db_params = crate::models::TimelineParams {
+        from_ms: params.from_ms,
+        to_ms: params.to_ms,
+        event_type: params.event_type,
+        category: params.category,
+        entity_id: params.entity_id,
+        workspace_hash: params.workspace,
+        limit,
+        offset,
+    };
+    let (items, total) = blocking_db(state.db.clone(), move |db| {
+        let items = db
+            .timeline(&db_params)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let total = db
+            .timeline_count(&db_params)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        Ok((items, total))
+    })
+    .await?;
+    Ok(Json(json!({"items": items, "total": total, "limit": limit, "offset": offset})))
+}
+
+async fn history(
+    State(state): State<WebState>,
+    Query(params): Query<HistoryParams>,
+) -> Result<Json<Value>, StatusCode> {
+    if params.category.trim().is_empty() || params.key.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let limit = params.limit.clamp(0, 1000);
+    let offset = params.offset.max(0);
+    let category = params.category;
+    let key = params.key;
+    let workspace = params.workspace;
+    let query_category = category.clone();
+    let query_key = key.clone();
+    let query_workspace = workspace.clone();
+    let (versions, total) = blocking_db(state.db.clone(), move |db| {
+        db.history_versions_page_scoped(
+            &query_category,
+            &query_key,
+            query_workspace.as_deref(),
+            limit,
+            offset,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    })
+    .await?;
+    let items: Vec<Value> = versions.iter().map(|e| e.to_json_expanded()).collect();
+    Ok(Json(json!({
+        "category": category,
+        "key": key,
+        "workspace": workspace,
+        "versions": items,
+        "total": total,
+        "returned": items.len(),
+        "limit": limit,
+        "offset": offset,
+    })))
 }
 
 async fn journal(
@@ -411,6 +682,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_dashboard_does_not_reflect_cross_origin_requests() {
+        let (db, path) = temp_db();
+        let router = build_router(db, None);
+        let resp = router
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/stats")
+                    .header(header::ORIGIN, "https://attacker.invalid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "loopback dashboard must stay same-origin when no bearer token is configured"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -956,6 +1249,46 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[tokio::test]
+    async fn dashboard_search_is_observationally_read_only() {
+        let (db_arc, path) = temp_db();
+        {
+            let db = &db_arc;
+            db.remember(&make_entity(
+                "search-read-only",
+                "insight",
+                "search-read-only-key",
+                r#"{"summary":"dashboard inspection marker"}"#,
+                "",
+            ))
+            .unwrap();
+        }
+        let before = db_arc
+            .get_entity("insight", "search-read-only-key")
+            .unwrap()
+            .unwrap();
+        let router = build_router(db_arc.clone(), None);
+        let resp = router
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/search?q=inspection&limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let after = db_arc
+            .get_entity("insight", "search-read-only-key")
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.retrieval_count, after.retrieval_count);
+        assert_eq!(before.last_accessed_unix_ms, after.last_accessed_unix_ms);
+        assert_eq!(before.decay_score, after.decay_score);
+        assert_eq!(before.layer, after.layer);
+        let _ = std::fs::remove_file(&path);
+    }
+
     // ── strict empty-workspace scoping (#408) ─────────────────────────
 
     #[tokio::test]
@@ -1129,6 +1462,35 @@ mod tests {
     // ── entity_detail / stats / journal smoke tests ──────────────────
 
     #[tokio::test]
+    async fn entity_detail_returns_existing_entity() {
+        let (db_arc, path) = temp_db();
+        db_arc
+            .remember(&make_entity(
+                "detail-id",
+                "insight",
+                "detail-key",
+                r#"{"summary":"detail marker"}"#,
+                "",
+            ))
+            .unwrap();
+        let router = build_router(db_arc, None);
+        let resp = router
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/entities/detail-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let value = body_json(resp).await;
+        assert_eq!(value["id"], "detail-id");
+        assert_eq!(value["key"], "detail-key");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
     async fn entity_detail_returns_404_for_missing_id() {
         let (db, path) = temp_db();
         let router = build_router(db, None);
@@ -1149,7 +1511,18 @@ mod tests {
     async fn stats_and_journal_endpoints_respond_ok() {
         let (db, path) = temp_db();
         let router = build_router(db, None);
-        for uri in ["/api/stats", "/api/journal"] {
+        for uri in [
+            "/api/stats",
+            "/api/health",
+            "/api/quality",
+            "/api/hygiene",
+            "/api/operator-review",
+            "/api/keystones",
+            "/api/agents",
+            "/api/journal",
+            "/api/timeline",
+            "/api/history?category=insight&key=missing",
+        ] {
             let resp = router
                 .clone()
                 .oneshot(
@@ -1165,27 +1538,136 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ── #494: "About you" dashboard tab ──────────────────────────────
+    #[tokio::test]
+    async fn timeline_and_history_support_workspace_scoping() {
+        let (db_arc, path) = temp_db();
+        for workspace in ["alpha", "beta"] {
+            db_arc
+                .remember(&make_entity(
+                    &format!("{workspace}-v1"),
+                    "fact",
+                    "shared-key",
+                    &format!(r#"{{"summary":"{workspace} original value"}}"#),
+                    workspace,
+                ))
+                .unwrap();
+            db_arc
+                .remember(&make_entity(
+                    &format!("{workspace}-v2"),
+                    "fact",
+                    "shared-key",
+                    &format!(r#"{{"summary":"{workspace} replacement with distinct content"}}"#),
+                    workspace,
+                ))
+                .unwrap();
+            db_arc
+                .journal(&crate::models::JournalEvent {
+                    id: format!("event-{workspace}"),
+                    event_type: "observation".to_string(),
+                    evaluated_json: "{}".to_string(),
+                    acted_json: "{}".to_string(),
+                    forward_json: "{}".to_string(),
+                    category: "fact".to_string(),
+                    key: "shared-key".to_string(),
+                    entity_id: String::new(),
+                    agent_id: "tester".to_string(),
+                    workspace_hash: workspace.to_string(),
+                    created_at_unix_ms: 1,
+                })
+                .unwrap();
+        }
+        let router = build_router(db_arc, None);
+        let history_response = router
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/history?category=fact&key=shared-key&workspace=alpha")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let history = body_json(history_response).await;
+        assert_eq!(history["total"], 1);
+        assert!(history["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["workspace_hash"] == "alpha"));
+
+        let timeline_response = router
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/timeline?workspace=alpha&offset=999999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let timeline = body_json(timeline_response).await;
+        assert_eq!(timeline["total"], 1);
+        assert_eq!(timeline["offset"], 10_000);
+
+        let timeline_response = router
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/timeline?workspace=alpha")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let timeline = body_json(timeline_response).await;
+        assert_eq!(timeline["items"].as_array().unwrap().len(), 1);
+        assert_eq!(timeline["items"][0]["workspace_hash"], "alpha");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn quality_without_category_aggregates_all_categories() {
+        let (db_arc, path) = temp_db();
+        for (id, body) in [
+            ("quality-a", r#"{"summary":"database migration accepted"}"#),
+            ("quality-b", r#"{"summary":"vacation itinerary rejected"}"#),
+        ] {
+            db_arc
+                .remember(&make_entity(id, "quality-category", id, body, ""))
+                .unwrap();
+        }
+        let router = build_router(db_arc, None);
+        let response = router
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/quality")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let value = body_json(response).await;
+        assert_eq!(value["category_scanned"], "all");
+        assert!(value["contradiction_count"].as_i64().unwrap() >= 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── dashboard shell smoke ────────────────────────────────────────
 
     #[test]
-    fn dashboard_ships_about_you_tab() {
-        // The tab, its loader, and its read-only curation pointer must all be
-        // present in the embedded SPA. Bucketing mirrors `perseus knows`
-        // (perseus #692) — the shared bucket names are load-bearing.
+    fn dashboard_ships_operations_console() {
         let html = super::dashboard_html::HTML;
-        assert!(html.contains("data-tab=\"about\""));
-        assert!(html.contains("async function loadAbout()"));
-        for bucket in [
-            "About you",
-            "Recently learned",
-            "Project facts & decisions",
-            "Low confidence — might be stale",
-        ] {
-            assert!(html.contains(bucket), "missing bucket: {}", bucket);
+        for view in ["overview", "memories", "activity", "governance", "relationships"] {
+            assert!(html.contains(&format!("data-view=\"{}\"", view)));
+            assert!(html.contains(&format!("view-{}", view)));
         }
-        // Honest headline: active-only stats preferred, archived shown muted.
-        assert!(html.contains("stats.active_entities"));
-        // Read-only by design — points at the CLI for curation.
-        assert!(html.contains("perseus knows --forget"));
+        assert!(html.contains("/api/health"));
+        assert!(html.contains("/api/timeline"));
+        assert!(html.contains("/api/history"));
+        assert!(!html.contains("cdn.jsdelivr.net"));
+        assert!(!html.contains("vis-network"));
+        assert!(html.contains("aria-live=\"polite\""));
+        assert!(html.contains("const attr ="));
+        assert!(!html.contains("data-memory-id=\"${esc("));
+        assert!(html.contains("Dashboard reads are observational"));
     }
 }

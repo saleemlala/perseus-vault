@@ -6072,6 +6072,26 @@ impl Database {
         Ok(a)
     }
 
+    /// #684: list all registered agents for operator-facing read paths.
+    pub fn agents(&self) -> Result<Vec<crate::models::Agent>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, name, trust_tier, fleet_id, created_at_unix_ms, updated_at_unix_ms \
+             FROM agents ORDER BY name ASC, agent_id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(crate::models::Agent {
+                agent_id: r.get(0)?,
+                name: r.get(1)?,
+                trust_tier: r.get(2)?,
+                fleet_id: r.get(3)?,
+                created_at_unix_ms: r.get(4)?,
+                updated_at_unix_ms: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// #684: trust tier for an agent_id. Empty id → unscoped/admin (3, preserves
     /// single-agent behavior); registered → its tier; unknown non-empty → 0.
     pub fn agent_trust_tier(&self, agent_id: &str) -> i64 {
@@ -6159,31 +6179,70 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<crate::models::Entity>, i64), Box<dyn std::error::Error>> {
+        self.history_versions_page_scoped(category, key, None, limit, offset)
+    }
+
+    /// Workspace-aware history listing for operator surfaces. `Some("")`
+    /// strictly selects global history; `None` preserves the unscoped tool API.
+    pub fn history_versions_page_scoped(
+        &self,
+        category: &str,
+        key: &str,
+        workspace_hash: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<crate::models::Entity>, i64), Box<dyn std::error::Error>> {
         let conn = self.conn()?;
-        let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entity_history WHERE category = ?1 AND key = ?2",
-            params![category, key],
-            |r| r.get(0),
-        )?;
-        // Column order matches entity_from_row (incl. NULL embedding at index 18).
-        let mut stmt = conn.prepare(
-            "SELECT id, category, key, body_json, status, type, tags, decay_score,
-                    retrieval_count, layer, topic_path, archived, archive_reason, links,
-                    verified, source, created_at_unix_ms, last_accessed_unix_ms,
-                    NULL as embedding, always_on, certainty, workspace_hash, agent_id,
-                    visibility
-             FROM entity_history
-             WHERE category = ?1 AND key = ?2
-             ORDER BY invalidated_at_unix_ms DESC, recorded_at_unix_ms DESC
-             LIMIT ?3 OFFSET ?4",
-        )?;
         let enc = self.encryption.as_ref();
-        let rows = stmt.query_map(params![category, key, limit, offset.max(0)], |r| {
-            entity_from_row(r, enc)
-        })?;
         let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
+        let total: i64;
+        if let Some(workspace) = workspace_hash {
+            total = conn.query_row(
+                "SELECT COUNT(*) FROM entity_history WHERE category = ?1 AND key = ?2 AND workspace_hash = ?3",
+                params![category, key, workspace],
+                |r| r.get(0),
+            )?;
+            let mut stmt = conn.prepare(
+                "SELECT id, category, key, body_json, status, type, tags, decay_score,
+                        retrieval_count, layer, topic_path, archived, archive_reason, links,
+                        verified, source, created_at_unix_ms, last_accessed_unix_ms,
+                        NULL as embedding, always_on, certainty, workspace_hash, agent_id,
+                        visibility
+                 FROM entity_history
+                 WHERE category = ?1 AND key = ?2 AND workspace_hash = ?3
+                 ORDER BY invalidated_at_unix_ms DESC, recorded_at_unix_ms DESC
+                 LIMIT ?4 OFFSET ?5",
+            )?;
+            let rows = stmt.query_map(
+                params![category, key, workspace, limit, offset.max(0)],
+                |r| entity_from_row(r, enc),
+            )?;
+            for row in rows {
+                out.push(row?);
+            }
+        } else {
+            total = conn.query_row(
+                "SELECT COUNT(*) FROM entity_history WHERE category = ?1 AND key = ?2",
+                params![category, key],
+                |r| r.get(0),
+            )?;
+            let mut stmt = conn.prepare(
+                "SELECT id, category, key, body_json, status, type, tags, decay_score,
+                        retrieval_count, layer, topic_path, archived, archive_reason, links,
+                        verified, source, created_at_unix_ms, last_accessed_unix_ms,
+                        NULL as embedding, always_on, certainty, workspace_hash, agent_id,
+                        visibility
+                 FROM entity_history
+                 WHERE category = ?1 AND key = ?2
+                 ORDER BY invalidated_at_unix_ms DESC, recorded_at_unix_ms DESC
+                 LIMIT ?3 OFFSET ?4",
+            )?;
+            let rows = stmt.query_map(params![category, key, limit, offset.max(0)], |r| {
+                entity_from_row(r, enc)
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
         }
         Ok((out, total))
     }
@@ -6584,9 +6643,14 @@ impl Database {
             }
         }
 
+        if let Some(ref workspace) = params.workspace_hash {
+            conditions.push(format!("workspace_hash = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(workspace.clone()));
+        }
+
         let mut sql = String::from(
             "SELECT id, event_type, evaluated_json, acted_json, forward_json,
-                    category, key, entity_id, agent_id, created_at_unix_ms
+                    category, key, entity_id, agent_id, workspace_hash, created_at_unix_ms
              FROM journal",
         );
 
@@ -6622,9 +6686,8 @@ impl Database {
                 key: row.get(6)?,
                 entity_id: row.get(7)?,
                 agent_id: row.get::<_, Option<String>>(8).unwrap_or(None).unwrap_or_default(),
-                // Not selected by this listing query; purge-scoping metadata only.
-                workspace_hash: String::new(),
-                created_at_unix_ms: row.get(9)?,
+                workspace_hash: row.get::<_, Option<String>>(9).unwrap_or(None).unwrap_or_default(),
+                created_at_unix_ms: row.get(10)?,
             })
         })?;
 
@@ -6633,6 +6696,54 @@ impl Database {
             items.push(row?);
         }
         Ok(items)
+    }
+
+    /// Count journal events matching the same filters as `timeline`.
+    pub fn timeline_count(
+        &self,
+        params: &TimelineParams,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let mut conditions: Vec<String> = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(from) = params.from_ms {
+            conditions.push(format!("created_at_unix_ms >= ?{}", values.len() + 1));
+            values.push(Box::new(from));
+        }
+        if let Some(to) = params.to_ms {
+            conditions.push(format!("created_at_unix_ms <= ?{}", values.len() + 1));
+            values.push(Box::new(to));
+        }
+        if let Some(ref event_type) = params.event_type {
+            if !event_type.is_empty() {
+                conditions.push(format!("event_type = ?{}", values.len() + 1));
+                values.push(Box::new(event_type.clone()));
+            }
+        }
+        if let Some(ref category) = params.category {
+            if !category.is_empty() {
+                conditions.push(format!("category = ?{}", values.len() + 1));
+                values.push(Box::new(category.clone()));
+            }
+        }
+        if let Some(ref entity_id) = params.entity_id {
+            if !entity_id.is_empty() {
+                conditions.push(format!("entity_id = ?{}", values.len() + 1));
+                values.push(Box::new(entity_id.clone()));
+            }
+        }
+        if let Some(ref workspace) = params.workspace_hash {
+            conditions.push(format!("workspace_hash = ?{}", values.len() + 1));
+            values.push(Box::new(workspace.clone()));
+        }
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        let sql = format!("SELECT COUNT(*) FROM journal{where_clause}");
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        Ok(conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?)
     }
 
     /// #521: journal-side candidate query for the failure-pattern / deja-vu

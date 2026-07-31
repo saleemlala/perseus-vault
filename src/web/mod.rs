@@ -1613,7 +1613,7 @@ mod tests {
             .await
             .unwrap();
         let timeline = body_json(timeline_response).await;
-        assert_eq!(timeline["total"], 1);
+        assert_eq!(timeline["total"], 3);
         assert_eq!(timeline["offset"], 10_000);
 
         let timeline_response = router
@@ -1626,8 +1626,12 @@ mod tests {
             .await
             .unwrap();
         let timeline = body_json(timeline_response).await;
-        assert_eq!(timeline["items"].as_array().unwrap().len(), 1);
-        assert_eq!(timeline["items"][0]["workspace_hash"], "alpha");
+        assert_eq!(timeline["items"].as_array().unwrap().len(), 3);
+        assert!(timeline["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["workspace_hash"] == "alpha"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1679,5 +1683,7 @@ mod tests {
         assert!(html.contains("[].concat(e.recall_when || []).map"));
         assert!(!html.contains("${(e.recall_when || []).map"));
         assert!(html.contains("Dashboard reads are observational"));
+        assert!(html.contains("new Map((data.nodes || [])"));
+        assert!(html.contains("replaceAll('_', ' ')"));
     }
 }

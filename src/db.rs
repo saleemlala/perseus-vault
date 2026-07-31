@@ -3598,6 +3598,28 @@ impl Database {
         self.remember_impl(entity, skip_dedup, valid_from, valid_to)
     }
 
+    fn memory_activity(
+        entity: &Entity,
+        entity_id: &str,
+        key: &str,
+        action: &str,
+        created_at_unix_ms: i64,
+    ) -> JournalEvent {
+        JournalEvent {
+            id: format!("jrn-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+            event_type: format!("memory_{action}"),
+            evaluated_json: json!({"operation": "remember"}).to_string(),
+            acted_json: json!({"result": action}).to_string(),
+            forward_json: "{}".to_string(),
+            category: entity.category.clone(),
+            key: key.to_string(),
+            entity_id: entity_id.to_string(),
+            agent_id: entity.agent_id.clone(),
+            workspace_hash: entity.workspace_hash.clone(),
+            created_at_unix_ms,
+        }
+    }
+
     fn remember_impl(
         &self,
         entity: &Entity,
@@ -3995,6 +4017,10 @@ impl Database {
             // stored value the signature must describe. Same transaction as
             // the row write: no window where a scan sees a stale signature.
             Self::upsert_dedup_signature(&tx, &id, &body_encrypted)?;
+            self.append_journal(
+                &tx,
+                &Self::memory_activity(entity, &id, &entity.key, "updated", now),
+            )?;
             tx.commit()?;
 
             action = "updated".to_string();
@@ -4035,13 +4061,29 @@ impl Database {
                     &entity.body_json,
                     dup_threshold,
                 ) {
-                    // Near-duplicate found — bump its importance instead of creating new
-                    let _ = conn.execute(
+                    let tx = Self::audited_write_tx(&conn)?;
+                    let target_key: String = tx.query_row(
+                        "SELECT key FROM entities WHERE id = ?1",
+                        params![dup_id],
+                        |row| row.get(0),
+                    )?;
+                    tx.execute(
                         "UPDATE entities SET decay_score = MIN(1.0, decay_score + 0.15),
                          retrieval_count = retrieval_count + 1,
                          last_accessed_unix_ms = ?1 WHERE id = ?2",
                         params![now_ms(), dup_id],
-                    );
+                    )?;
+                    self.append_journal(
+                        &tx,
+                        &Self::memory_activity(
+                            entity,
+                            &dup_id,
+                            &target_key,
+                            "deduplicated",
+                            now_ms(),
+                        ),
+                    )?;
+                    tx.commit()?;
                     return Ok((dup_id, "deduped (new key not created)".to_string()));
                 }
             }
@@ -4049,9 +4091,9 @@ impl Database {
             // Insert new entity
             id = entity.id.clone();
 
-            // M-1: wrap entity row + FTS index write in a transaction
-            // so a failure in one doesn't leave the other orphaned.
-            let tx = conn.unchecked_transaction()?;
+            // M-1: wrap entity row + FTS index + Activity event in one
+            // immediate transaction so the audit trail cannot miss a commit.
+            let tx = Self::audited_write_tx(&conn)?;
             tx.execute(
                 "INSERT INTO entities
                  (id, category, key, body_json, status, type, tags,
@@ -4113,6 +4155,16 @@ impl Database {
             // transaction as the row itself, so subsequent dedup scans never
             // rebuild this row's trigram set from its body.
             Self::upsert_dedup_signature(&tx, &id, &body_encrypted)?;
+            self.append_journal(
+                &tx,
+                &Self::memory_activity(
+                    entity,
+                    &id,
+                    &entity.key,
+                    "created",
+                    entity.created_at_unix_ms,
+                ),
+            )?;
             tx.commit()?;
 
             action = "created".to_string();
@@ -5784,10 +5836,21 @@ impl Database {
 
     // ─── Journal ─────────────────────────────────────────────────
 
-    /// Append a journal event.
+    /// Append a journal event under the same immediate-writer discipline used
+    /// by entity mutations, keeping the audit hash chain linear under concurrency.
     pub fn journal(&self, event: &JournalEvent) -> Result<(), Box<dyn std::error::Error>> {
         let conn = self.conn()?;
+        let tx = Self::audited_write_tx(&conn)?;
+        self.append_journal(&tx, event)?;
+        tx.commit()?;
+        Ok(())
+    }
 
+    fn append_journal(
+        &self,
+        conn: &rusqlite::Connection,
+        event: &JournalEvent,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // #417: stamp the workspace of the referenced entity so purge can scope
         // journal redaction per-workspace. Prefer an explicit value on the
         // event; otherwise derive it from the referenced entity (the live row,
@@ -5821,12 +5884,22 @@ impl Database {
         // (prev, id, created_at, workspace, commitment). Keyed (HMAC) when
         // encryption is enabled, else unkeyed SHA-256. See
         // docs/audit-chain-keyed-mac-design.md.
-        let prev_hash: Option<String> = conn.query_row(
-            "SELECT audit_hash FROM journal ORDER BY created_at_unix_ms DESC LIMIT 1",
-            [],
-            |r| r.get::<_, Option<String>>(0),
-        ).unwrap_or(None);
-        let prev = prev_hash.as_deref().unwrap_or("genesis");
+        let previous: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT audit_hash, created_at_unix_ms FROM journal \
+                 ORDER BY created_at_unix_ms DESC, rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+        let (prev, last_created_at) = previous
+            .as_ref()
+            .map(|(hash, created_at)| (hash.as_str(), *created_at))
+            .unwrap_or(("genesis", 0));
+        // The chain's canonical order predates this writer lock and is
+        // (created_at, rowid). Clamp under that lock so concurrent or backdated
+        // callers cannot append a row that sorts before its predecessor.
+        let created_at_unix_ms = event.created_at_unix_ms.max(last_created_at);
 
         let commitment = crate::db::audit_payload_commitment(
             &event.event_type,
@@ -5843,7 +5916,7 @@ impl Database {
             audit_key.as_ref(),
             prev,
             &event.id,
-            event.created_at_unix_ms,
+            created_at_unix_ms,
             &workspace_hash,
             &commitment,
         );
@@ -5873,7 +5946,7 @@ impl Database {
                 workspace_hash,
                 commitment,
                 chancery_writ_id,
-                event.created_at_unix_ms,
+                created_at_unix_ms,
             ],
         )?;
         Ok(())
@@ -18847,6 +18920,45 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_journal_appends_keep_one_audit_chain() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let (db, path) = temp_db();
+        let db = Arc::new(db);
+        let handles: Vec<_> = (0..4)
+            .map(|worker| {
+                let db = Arc::clone(&db);
+                thread::spawn(move || {
+                    for item in 0..20 {
+                        db.journal(&JournalEvent {
+                            id: format!("jrn-race-{worker}-{item}"),
+                            event_type: "action".to_string(),
+                            evaluated_json: "{}".to_string(),
+                            acted_json: "{}".to_string(),
+                            forward_json: "{}".to_string(),
+                            category: "test".to_string(),
+                            key: format!("{worker}-{item}"),
+                            entity_id: String::new(),
+                            agent_id: "test".to_string(),
+                            workspace_hash: String::new(),
+                            created_at_unix_ms: 1_000_000 - (worker * 20 + item) as i64,
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(verify_audit_chain(&db).unwrap(), 80);
+        drop(db);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn journal_and_timeline() {
         let (db, path) = temp_db();
 
@@ -24506,8 +24618,8 @@ mod tests {
         let dry = db.purge(true).unwrap();
         assert_eq!(dry.entities_deleted, 2);
         assert_eq!(
-            dry.journal_rows_redacted, 1,
-            "the shared journal row must be counted once, not once per entity"
+            dry.journal_rows_redacted, 3,
+            "two memory events plus the shared row must each be counted once"
         );
         let actual = db.purge(false).unwrap();
         assert_eq!(dry.journal_rows_redacted, actual.journal_rows_redacted);
@@ -24586,8 +24698,8 @@ mod tests {
         let report = db.purge(false).unwrap();
         assert_eq!(report.entities_deleted, 1);
         assert_eq!(
-            report.journal_rows_redacted, 1,
-            "only workspace A's journal row should be redacted"
+            report.journal_rows_redacted, 2,
+            "only workspace A's memory and explicit journal rows should be redacted"
         );
 
         let conn = db.conn().unwrap();

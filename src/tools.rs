@@ -6703,6 +6703,48 @@ mod tests {
     }
 
     #[test]
+    fn remember_appends_create_and_update_activity() {
+        let (db, path) = temp_db();
+        let first: Value = serde_json::from_str(
+            &handle_remember(
+                &db,
+                json!({"category":"decision","key":"activity-memory",
+                       "body_json":"{\"summary\":\"first\"}",
+                       "agent_id":"pi","workspace_hash":"proj:test"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        handle_remember(
+            &db,
+            json!({"category":"decision","key":"activity-memory",
+                   "body_json":"{\"summary\":\"second\"}",
+                   "agent_id":"pi","workspace_hash":"proj:test"}),
+        )
+        .unwrap();
+
+        let events = db
+            .timeline(&TimelineParams {
+                entity_id: Some(first["id"].as_str().unwrap().to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(events.len(), 2, "create and update must both be visible");
+        let event_types: std::collections::HashSet<&str> =
+            events.iter().map(|event| event.event_type.as_str()).collect();
+        assert_eq!(
+            event_types,
+            std::collections::HashSet::from(["memory_created", "memory_updated"])
+        );
+        assert!(events.iter().all(|event| {
+            event.key == "activity-memory"
+                && event.agent_id == "pi"
+                && event.workspace_hash == "proj:test"
+        }));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn remember_surfaces_dedup_and_skip_dedup_creates() {
         // #531: 2,000 acknowledged bulk writes silently collapsed to a
         // handful of rows via near-duplicate merging, with nothing in the
@@ -6745,6 +6787,19 @@ mod tests {
         let v: Value = serde_json::from_str(&r).unwrap();
         assert_eq!(v["action"], json!("created"), "{r}");
         assert_ne!(v["id"], json!(first_id), "{r}");
+
+        let dedup_events = db
+            .timeline(&TimelineParams {
+                event_type: Some("memory_deduplicated".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(dedup_events.len(), 1);
+        assert_eq!(dedup_events[0].entity_id, first_id);
+        assert_eq!(
+            dedup_events[0].key, "line-0001",
+            "dedup activity must show the canonical target key"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

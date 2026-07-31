@@ -1464,15 +1464,15 @@ mod tests {
     #[tokio::test]
     async fn entity_detail_returns_existing_entity() {
         let (db_arc, path) = temp_db();
-        db_arc
-            .remember(&make_entity(
-                "detail-id",
-                "insight",
-                "detail-key",
-                r#"{"summary":"detail marker"}"#,
-                "",
-            ))
-            .unwrap();
+        let mut entity = make_entity(
+            "detail-id",
+            "insight",
+            "detail-key",
+            r#"{"summary":"detail marker","tags":["body-spoof"],"workspace_hash":"wrong"}"#,
+            "actual-workspace",
+        );
+        entity.tags = vec!["scope:proj:test".to_string(), "model:test/model".to_string()];
+        db_arc.remember(&entity).unwrap();
         let router = build_router(db_arc, None);
         let resp = router
             .oneshot(
@@ -1487,6 +1487,13 @@ mod tests {
         let value = body_json(resp).await;
         assert_eq!(value["id"], "detail-id");
         assert_eq!(value["key"], "detail-key");
+        assert_eq!(value["workspace_hash"], "actual-workspace");
+        assert_eq!(
+            value["tags"],
+            json!(["scope:proj:test", "model:test/model"]),
+            "body_json must not shadow structured entity tags"
+        );
+        assert_eq!(value["summary"], "detail marker");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1668,6 +1675,9 @@ mod tests {
         assert!(html.contains("aria-live=\"polite\""));
         assert!(html.contains("const attr ="));
         assert!(!html.contains("data-memory-id=\"${esc("));
+        assert!(html.contains("[].concat(e.tags || []).map"));
+        assert!(html.contains("[].concat(e.recall_when || []).map"));
+        assert!(!html.contains("${(e.recall_when || []).map"));
         assert!(html.contains("Dashboard reads are observational"));
     }
 }

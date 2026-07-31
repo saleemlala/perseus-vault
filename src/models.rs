@@ -80,8 +80,9 @@ impl Entity {
         if let Some(serde_json::Value::Object(map)) = body_val {
             if let Some(obj) = val.as_object_mut() {
                 for (k, v) in map {
-                    if k != "id" && k != "category" && k != "key" && k != "body_json" && k != "type"
-                    {
+                    // Body fields are expanded for convenience, but stored
+                    // entity metadata is authoritative and cannot be shadowed.
+                    if !obj.contains_key(&k) {
                         obj.insert(k, v);
                     }
                 }

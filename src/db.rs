@@ -3835,6 +3835,27 @@ impl Database {
                 Self::snapshot_live_row_to_history(&tx, self.encryption.as_ref(), &history_id, now, &id)?;
             }
 
+            // Attribution is cumulative: a later authored update may replace
+            // ordinary categorization tags, but it must not erase which models
+            // previously wrote this entity. Version history still preserves
+            // the exact tag set for each individual write.
+            let tags_json = {
+                let stored: String = tx
+                    .query_row(
+                        "SELECT tags FROM entities WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or_else(|_| "[]".to_string());
+                let mut merged = entity.tags.clone();
+                for tag in serde_json::from_str::<Vec<String>>(&stored).unwrap_or_default() {
+                    if tag.starts_with("model:") && !merged.contains(&tag) {
+                        merged.push(tag);
+                    }
+                }
+                serde_json::to_string(&merged)?
+            };
+
             // #382: remember must not clobber the stored link graph. Callers
             // construct the Entity without its stored links (the MCP remember
             // tool always passes []), so a wholesale `links = caller` erased
@@ -5653,24 +5674,43 @@ impl Database {
         relationship: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let conn = self.conn()?;
-        // Verify both entities exist (id resolution only — ids are immutable,
-        // so these reads don't need the writer lock; and they run on THIS
-        // connection, see resolve_entity_id / #387).
         let from_id = Self::resolve_entity_id(&conn, from_category, from_key)?
             .ok_or("Source entity not found")?;
-        let _to: String = conn
-            .query_row(
+        Self::link_ids(&conn, &from_id, to_id, relationship)
+    }
+
+    /// Create a link using immutable entity ids. Authored citations use this
+    /// path so a workspace-scoped source cannot resolve to a same-key global row.
+    pub fn link_by_id(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relationship: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Self::link_ids(&conn, from_id, to_id, relationship)
+    }
+
+    fn link_ids(
+        conn: &rusqlite::Connection,
+        from_id: &str,
+        to_id: &str,
+        relationship: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (id, label) in [(from_id, "Source"), (to_id, "Target")] {
+            conn.query_row(
                 "SELECT id FROM entities WHERE id = ?1",
-                params![to_id],
-                |r| r.get(0),
+                params![id],
+                |r| r.get::<_, String>(0),
             )
-            .map_err(|_| "Target entity not found")?;
+            .map_err(|_| format!("{label} entity not found"))?;
+        }
 
         // #382: the links read-modify-write must hold the writer lock — two
         // concurrent link() calls reading the same base array on the bare
         // pooled connection would both write back, silently dropping the
         // first edge. See audited_write_tx (#380).
-        let tx = Self::audited_write_tx(&conn)?;
+        let tx = Self::audited_write_tx(conn)?;
         // Get existing links (default to empty array if missing)
         let links_str: String = tx
             .query_row(
@@ -5682,7 +5722,10 @@ impl Database {
 
         let mut links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
         // Avoid duplicates
-        if !links.iter().any(|l| l.target_id == to_id) {
+        if !links
+            .iter()
+            .any(|link| link.target_id == to_id && link.relationship == relationship)
+        {
             links.push(MemoryLink {
                 target_id: to_id.to_string(),
                 relationship: relationship.to_string(),
@@ -8259,44 +8302,70 @@ impl Database {
         category: &str,
         key: &str,
         workspace_hash: Option<&str>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let now = now_ms();
-        let affected = match workspace_hash {
-            Some(ws) => conn.execute(
-                "UPDATE entities SET usefulness_count = usefulness_count + 1, \
-                 last_useful_unix_ms = ?1, last_accessed_unix_ms = ?1 \
-                 WHERE id = (SELECT id FROM entities \
-                     WHERE category = ?2 AND key = ?3 AND workspace_hash = ?4 \
-                     AND archived = 0 ORDER BY id ASC LIMIT 1)",
-                params![now, category, key, ws],
-            )?,
-            None => conn.execute(
-                "UPDATE entities SET usefulness_count = usefulness_count + 1, \
-                 last_useful_unix_ms = ?1, last_accessed_unix_ms = ?1 \
-                 WHERE id = (SELECT id FROM entities \
-                     WHERE category = ?2 AND key = ?3 AND archived = 0 \
-                     ORDER BY workspace_hash ASC, id ASC LIMIT 1)",
-                params![now, category, key],
-            )?,
+        let id = match workspace_hash {
+            Some(ws) => conn
+                .query_row(
+                    "UPDATE entities SET usefulness_count = usefulness_count + 1, \
+                     last_useful_unix_ms = ?1, last_accessed_unix_ms = ?1 \
+                     WHERE id = (SELECT id FROM entities \
+                         WHERE category = ?2 AND key = ?3 AND workspace_hash = ?4 \
+                         AND archived = 0 ORDER BY id ASC LIMIT 1) \
+                     RETURNING id",
+                    params![now, category, key, ws],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => conn
+                .query_row(
+                    "UPDATE entities SET usefulness_count = usefulness_count + 1, \
+                     last_useful_unix_ms = ?1, last_accessed_unix_ms = ?1 \
+                     WHERE id = (SELECT id FROM entities \
+                         WHERE category = ?2 AND key = ?3 AND archived = 0 \
+                         ORDER BY workspace_hash ASC, id ASC LIMIT 1) \
+                     RETURNING id",
+                    params![now, category, key],
+                    |row| row.get(0),
+                )
+                .optional()?,
         };
-        Ok(affected > 0)
+        Ok(id)
     }
 
     /// `mark_useful` addressed by entity id — recall results carry ids, so
     /// `derived_from: ["mem-..."]` is the cheapest citation form. Live rows
-    /// only; an archived source is not reinforced (it was already judged
-    /// stale — citation should not resurrect it silently).
-    pub fn mark_useful_by_id(&self, id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    /// only; an archived source is not reinforced. A scoped writer still uses
+    /// strict workspace equality even when it supplies an immutable id.
+    pub fn mark_useful_by_id(
+        &self,
+        id: &str,
+        workspace_hash: Option<&str>,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let now = now_ms();
-        let affected = conn.execute(
-            "UPDATE entities SET usefulness_count = usefulness_count + 1, \
-             last_useful_unix_ms = ?1, last_accessed_unix_ms = ?1 \
-             WHERE id = ?2 AND archived = 0",
-            params![now, id],
-        )?;
-        Ok(affected > 0)
+        let id = match workspace_hash {
+            Some(ws) => conn
+                .query_row(
+                    "UPDATE entities SET usefulness_count = usefulness_count + 1, \
+                     last_useful_unix_ms = ?1, last_accessed_unix_ms = ?1 \
+                     WHERE id = ?2 AND workspace_hash = ?3 AND archived = 0 RETURNING id",
+                    params![now, id, ws],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => conn
+                .query_row(
+                    "UPDATE entities SET usefulness_count = usefulness_count + 1, \
+                     last_useful_unix_ms = ?1, last_accessed_unix_ms = ?1 \
+                     WHERE id = ?2 AND archived = 0 RETURNING id",
+                    params![now, id],
+                    |row| row.get(0),
+                )
+                .optional()?,
+        };
+        Ok(id)
     }
 
     /// How many of the most-recently-accessed entities in a category a single
@@ -10618,25 +10687,26 @@ last_accessed: {}
     }
 
     /// True if any of `lc_words` (already lowercased) is a substring of any
-    /// string in the body's `recall_when` array. Used to confirm FTS candidates.
+    /// string in the body's `recall_when` value. Arrays are canonical; scalar
+    /// strings remain accepted for authored-memory compatibility.
     fn matches_recall_when(body_json: &str, lc_words: &[String]) -> bool {
         let parsed: serde_json::Value = match serde_json::from_str(body_json) {
             Ok(v) => v,
             Err(_) => return false,
         };
-        let triggers = match parsed.get("recall_when").and_then(|v| v.as_array()) {
-            Some(t) => t,
+        let recall_when = match parsed.get("recall_when") {
+            Some(value) => value,
             None => return false,
         };
-        for trig in triggers {
-            if let Some(s) = trig.as_str() {
-                let s_lc = s.to_lowercase();
-                if lc_words.iter().any(|w| s_lc.contains(w.as_str())) {
-                    return true;
-                }
-            }
-        }
-        false
+        let triggers = match recall_when {
+            serde_json::Value::Array(values) => values.as_slice(),
+            serde_json::Value::String(_) => std::slice::from_ref(recall_when),
+            _ => return false,
+        };
+        triggers.iter().filter_map(|trigger| trigger.as_str()).any(|trigger| {
+            let trigger = trigger.to_lowercase();
+            lc_words.iter().any(|word| trigger.contains(word.as_str()))
+        })
     }
 
     /// cohere's decay pass, chunked (#400): apply the gentle multiplicative
@@ -18155,6 +18225,22 @@ mod tests {
         let none = db.recall_when("completely unrelated banana topic", 10, None).unwrap();
         assert!(none.iter().all(|h| h.id != "rw1"), "no spurious match");
 
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recall_when_accepts_scalar_trigger() {
+        let (db, path) = temp_db();
+        db.remember(&make_entity(
+            "rw-scalar",
+            "skill",
+            "deploy",
+            r#"{"recall_when":"deploying to production"}"#,
+        ))
+        .unwrap();
+
+        let hits = db.recall_when("start deploying now", 10, None).unwrap();
+        assert!(hits.iter().any(|entity| entity.id == "rw-scalar"));
         let _ = fs::remove_file(&path);
     }
 

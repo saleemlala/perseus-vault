@@ -881,13 +881,13 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         .remember_with_options(&entity, a.skip_dedup, a.valid_from_unix_ms, a.valid_to_unix_ms)
         .map_err(|e| format!("Remember failed: {}", e))?;
 
-    // #487: auto-reinforce the cited sources. Runs AFTER the write succeeded
-    // — a rejected remember must not reinforce anything. Self-citations are
-    // skipped (a write cannot vouch for itself); citations that resolve to no
-    // live row are reported back, not fatal (the write already happened).
-    // Resolution uses the writer's workspace with follow()'s semantics
-    // (#391/#396): strict equality when scoped, deterministic global-first
-    // pick when not.
+    // #487: auto-reinforce the cited sources and persist explicit provenance
+    // edges. Runs AFTER the write succeeded — a rejected remember must not
+    // reinforce or link anything. Self-citations are skipped; citations that
+    // resolve to no live row are reported back, not fatal (the write already
+    // happened). Resolution uses the writer's workspace with follow()'s
+    // semantics (#391/#396): strict equality when scoped, deterministic
+    // global-first pick when not.
     let derived_report = if a.derived_from.is_empty() {
         None
     } else {
@@ -899,27 +899,32 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         let mut reinforced = 0i64;
         let mut not_found: Vec<String> = Vec::new();
         for src in &a.derived_from {
-            let (label, hit) = match src {
+            let (label, target_id) = match src {
                 DerivedFromRef::Id(id) => {
                     if *id == eid {
                         continue;
                     }
-                    let hit = db.mark_useful_by_id(id).map_err(|e| {
+                    let target_id = db.mark_useful_by_id(id, ws).map_err(|e| {
                         format!("Remembered {} but derived_from reinforcement failed: {}", eid, e)
                     })?;
-                    (id.clone(), hit)
+                    (id.clone(), target_id)
                 }
                 DerivedFromRef::Pair { category, key } => {
                     if *category == entity.category && *key == entity.key {
                         continue;
                     }
-                    let hit = db.mark_useful(category, key, ws).map_err(|e| {
+                    let target_id = db.mark_useful(category, key, ws).map_err(|e| {
                         format!("Remembered {} but derived_from reinforcement failed: {}", eid, e)
                     })?;
-                    (format!("{}/{}", category, key), hit)
+                    (format!("{}/{}", category, key), target_id)
                 }
             };
-            if hit {
+            if let Some(target_id) = target_id {
+                if target_id != eid {
+                    db.link_by_id(&eid, &target_id, "derived_from").map_err(|e| {
+                        format!("Remembered {} but derived_from linking failed: {}", eid, e)
+                    })?;
+                }
                 reinforced += 1;
             } else {
                 not_found.push(label);
@@ -5702,7 +5707,32 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ─── derived_from auto-reinforcement (#487) ──────────────────
+    #[test]
+    fn remember_updates_preserve_model_attribution_tags() {
+        let (db, path) = temp_db();
+        handle_remember(
+            &db,
+            json!({"category":"decision","key":"tagged-update",
+                   "body_json":"{\"content\":\"first version\"}",
+                   "tags":["scope:global","old-category","model:provider/model-a"]}),
+        )
+        .unwrap();
+        handle_remember(
+            &db,
+            json!({"category":"decision","key":"tagged-update",
+                   "body_json":"{\"content\":\"second version\"}",
+                   "tags":["scope:global","model:provider/model-b"]}),
+        )
+        .unwrap();
+
+        let entity = db.get_entity("decision", "tagged-update").unwrap().unwrap();
+        assert!(entity.tags.contains(&"model:provider/model-a".to_string()));
+        assert!(entity.tags.contains(&"model:provider/model-b".to_string()));
+        assert!(!entity.tags.contains(&"old-category".to_string()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ─── derived_from reinforcement + graph lineage (#487) ─────────
 
     #[test]
     fn remember_derived_from_reinforces_cited_sources() {
@@ -5718,12 +5748,14 @@ mod tests {
         .expect("remember src-key");
         let src: Value = serde_json::from_str(&resp).unwrap();
         let src_id = src["id"].as_str().unwrap().to_string();
-        handle_remember(
+        let src2_resp = handle_remember(
             &db,
             json!({"category": "insight", "key": "src-key-2",
                    "body_json": "{\"content\":\"the deploy pipeline caches docker layers per branch\"}"}),
         )
         .expect("remember src-key-2");
+        let src2: Value = serde_json::from_str(&src2_resp).unwrap();
+        let src2_id = src2["id"].as_str().unwrap().to_string();
 
         let resp = handle_remember(
             &db,
@@ -5739,6 +5771,17 @@ mod tests {
             0,
             "{resp}"
         );
+
+        let derived = db
+            .get_entity("decision", "derived-write")
+            .unwrap()
+            .unwrap();
+        assert_eq!(derived.links.len(), 2, "each citation becomes a graph edge");
+        for target in [src_id, src2_id] {
+            assert!(derived.links.iter().any(|link| {
+                link.target_id == target && link.relationship == "derived_from"
+            }));
+        }
 
         // Both cited sources: usefulness bumped, last_useful stamped, and
         // last_accessed refreshed (a citation IS an access).
@@ -5789,6 +5832,91 @@ mod tests {
             )
             .unwrap();
         assert_eq!(u, 0, "a write cannot vouch for itself");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remember_derived_from_id_is_workspace_strict() {
+        let (db, path) = temp_db();
+        let source_resp = handle_remember(
+            &db,
+            json!({"category":"insight","key":"private-source","workspace_hash":"ws-b",
+                   "body_json":"{\"content\":\"workspace b source\"}"}),
+        )
+        .unwrap();
+        let source: Value = serde_json::from_str(&source_resp).unwrap();
+        let source_id = source["id"].as_str().unwrap();
+
+        let derived_resp = handle_remember(
+            &db,
+            json!({"category":"decision","key":"ws-a-decision","workspace_hash":"ws-a",
+                   "body_json":"{\"content\":\"workspace a decision\"}",
+                   "derived_from":[source_id]}),
+        )
+        .unwrap();
+        let derived: Value = serde_json::from_str(&derived_resp).unwrap();
+        assert_eq!(derived["derived_from"]["reinforced"], 0);
+        assert_eq!(derived["derived_from"]["not_found"], json!([source_id]));
+
+        let stored = db
+            .get_entity_by_id_public(derived["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(stored.links.is_empty(), "cross-workspace ID must not create an edge");
+        let source_usefulness: i64 = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT usefulness_count FROM entities WHERE id = ?1",
+                rusqlite::params![source_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_usefulness, 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn derived_from_coexists_with_other_relationship_to_same_target() {
+        let (db, path) = temp_db();
+        let source_resp = handle_remember(
+            &db,
+            json!({"category":"insight","key":"multi-rel-source",
+                   "body_json":"{\"content\":\"source evidence\"}"}),
+        )
+        .unwrap();
+        let source: Value = serde_json::from_str(&source_resp).unwrap();
+        let source_id = source["id"].as_str().unwrap();
+        let decision_resp = handle_remember(
+            &db,
+            json!({"category":"decision","key":"multi-rel-decision",
+                   "body_json":"{\"content\":\"initial decision\"}"}),
+        )
+        .unwrap();
+        let decision: Value = serde_json::from_str(&decision_resp).unwrap();
+        let decision_id = decision["id"].as_str().unwrap();
+        db.link_by_id(decision_id, source_id, "mentions").unwrap();
+
+        handle_remember(
+            &db,
+            json!({"category":"decision","key":"multi-rel-decision",
+                   "body_json":"{\"content\":\"updated from evidence\"}",
+                   "derived_from":[source_id]}),
+        )
+        .unwrap();
+        db.link_by_id(decision_id, source_id, "derived_from")
+            .unwrap();
+        let stored = db
+            .get_entity_by_id_public(decision_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.links.len(), 2, "same relationship pair must not duplicate");
+        assert!(stored.links.iter().any(|link| {
+            link.target_id == source_id && link.relationship == "mentions"
+        }));
+        assert!(stored.links.iter().any(|link| {
+            link.target_id == source_id && link.relationship == "derived_from"
+        }));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -5858,6 +5986,17 @@ mod tests {
         };
         assert_eq!(get("ws-a"), 1, "the ws-a row the agent saw gets the credit");
         assert_eq!(get(""), 0, "the global row must NOT be stamped by a ws-scoped write");
+
+        let derived = db
+            .get_entity_by_id_public(v["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(derived.links.len(), 1);
+        let target = db
+            .get_entity_by_id_public(&derived.links[0].target_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.workspace_hash, "ws-a", "edge must target the cited workspace row");
         let _ = std::fs::remove_file(&path);
     }
 
